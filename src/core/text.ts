@@ -1,0 +1,31 @@
+/** 中文正文字数统计：汉字按字计，英文单词折算 */
+export function countCjk(text: string): number {
+  const cjk = (text.match(/[\u4e00-\u9fa5]/g) || []).length;
+  const words = (text.match(/[A-Za-z]+/g) || []).length;
+  return cjk + Math.round(words / 1.6);
+}
+
+/**
+ * markdown 正文 -> 番茄纯文本。
+ * 番茄的 ProseMirror 富文本会把 `**` / `---` / ``` / `>` 当字面字符渲染，
+ * 所以上传前必须剥掉 markdown 标记，否则正文里会出现一堆星号、横线。
+ */
+export function toPlainText(text: string): string {
+  let t = text;
+  t = t.replace(/^\s*```.*$/gm, "");
+  t = t.replace(/\*\*/g, "");
+  t = t.replace(/^\s*>\s?/gm, "");
+  t = t.replace(/^\s*---\s*$/gm, "");
+  t = t.replace(/[ \t]+\n/g, "\n");
+  t = t.replace(/\n{3,}/g, "\n\n");
+  return t.trim();
+}
+
+/** 去掉标题里的「第X章」前缀（番茄序号框与标题框是两个独立输入框） */
+export function cleanChapterTitle(title: string): string {
+  return title.replace(/^第\s*[0-9一二三四五六七八九十百零]+\s*章[\s:：、.]*/u, "").trim();
+}
+
+export function pad2(n: number): string {
+  return String(n).padStart(2, "0");
+}
