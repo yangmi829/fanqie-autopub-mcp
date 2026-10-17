@@ -63,6 +63,7 @@ const EXPECTED_TOOLS = [
   "list_short_stories_tomato",
   "get_short_story_tomato",
   "create_short_story_tomato",
+  "update_short_story_tomato",
   "publish_short_story_tomato",
   "set_short_story_cover_tomato",
   "delete_short_story_tomato",
@@ -125,7 +126,7 @@ try {
   // 1) 工具清单
   const tools = await client.listTools();
   const names = tools.tools.map((t) => t.name);
-  check("工具总数=27", names.length === 27, `实际=${names.length}`);
+  check("工具总数=28", names.length === 28, `实际=${names.length}`);
   for (const t of EXPECTED_TOOLS) check(`工具存在: ${t}`, names.includes(t));
 
   // 2) 资源清单

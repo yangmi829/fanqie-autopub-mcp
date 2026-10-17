@@ -60,7 +60,7 @@ node scripts\mcp-cli.mjs --res fanqie://publish-rules            # 读资源
 
 ---
 
-## 2. 工具清单（27 个）
+## 2. 工具清单（28 个）
 
 ### 2.1 登录与状态（3）
 
@@ -70,7 +70,7 @@ node scripts\mcp-cli.mjs --res fanqie://publish-rules            # 读资源
 | `set_tomato_cookies` | 手动导入 cookies（文本或文件路径） |
 | `get_publish_status` | 环境自检：cookies / 浏览器驱动 / 后台可达性；`verify_login=true` 时实开浏览器校验登录态 |
 
-### 2.2 小说：新建与修改（4）
+### 2.2 小说：新建与修改（5）
 
 | 工具 | 说明 |
 |---|---|
@@ -78,6 +78,7 @@ node scripts\mcp-cli.mjs --res fanqie://publish-rules            # 读资源
 | `create_novel_tomato` | 驱动 `/main/writer/create` 真实建书 → 返回 `book_id`。必填：书名(≤15字)/频道/主角名1、2(≤5字)/简介(50–500字) |
 | `update_novel_info_tomato` | **改已有作品信息**：书名(≤15字)/主角名1、2(≤5字)/简介(50–500字)/阅读标签/内容标签。走「作品信息(type=1) → 修改 → 立即修改」；受作品信息审核锁保护。默认 `confirm=false` 只展开表单并截图 |
 | `set_book_tags` | 只改「阅读标签 / 内容标签」的快捷入口（内部就是 `update_novel_info_tomato` 的薄包装）。**语义是「确保这些标签处于选中」**：已经选中的会跳过，不会误取消 |
+| `update_novel` | **改本地小说登记 / 创作设定**（`data/novels.json`，**纯本地不碰后台**）：书名/频道/简介/主角名/标签/番茄书号绑定 + `genre`/`synopsis`/`outline`/`world_setting`/`golden_hook`/`characters`/`target_words_per_chapter`/`status`。只覆盖显式传入的字段，长文本可用 `*_file` 指向磁盘文件 |
 
 > 标签的真实机制（实测）：点标签行 → 弹出独立分类弹窗（标题即「阅读标签」/「内容标签」，选项 `.category-choose-item`，`active`=已选）→ 点选项 → 点弹窗「确认」才落到**表单**。弹窗「确认」**不等于**提交作品信息，最后仍需表单底部的「立即修改」；已验证点完弹窗「确认」但不点「立即修改」时，线上标签原样不变。
 
@@ -90,13 +91,14 @@ node scripts\mcp-cli.mjs --res fanqie://publish-rules            # 读资源
 | `update_chapter_tomato` | **改已发布章节**：走章节列表的编辑入口 `publish/{chapterId}/?enter_from=modifychapter`，复用上面同一条发布链路，最后按 `chapter_id` 复核标题。正文可用 `content`/`file_path`/`article_id`；**都不给＝保留线上正文、只改标题**。⚠️ 该编辑器边输入边自动保存，所以 `confirm=false` 时**只打开修改页读现状 + 截图，完全不填充**（避免误改线上）；`confirm=true` 才填入并提交 |
 | `batch_publish_chapters` | 从本地文稿库挑「待发布」章节，按序限速依次上传；单章失败不中断 |
 
-### 2.4 短故事（6）
+### 2.4 短故事（7）
 
 | 工具 | 说明 |
 |---|---|
 | `list_short_stories_tomato` | 短故事列表 / 草稿箱（`status=draft`） |
 | `get_short_story_tomato` | 读详情：标题/字数/分类/签约状态/可否修改 |
 | `create_short_story_tomato` | 新建并（可选）保存草稿；返回 `item_id` |
+| `update_short_story_tomato` | **改已存在短故事**（`/publish-short/{item_id}` 编辑页）：标题/正文/分类/封面/是否AI。只覆盖显式传入的字段；`confirm=true` **只点「存草稿」（不发布）**；默认 `confirm=false` 只打开编辑页读现状 + 截图、**完全不填充** |
 | `publish_short_story_tomato` | 发布：`item_id` 直发，或 `title`+`content` 新建并发布 |
 | `set_short_story_cover_tomato` | 上传本地封面图片 |
 | `delete_short_story_tomato` | 删除短故事/草稿（默认预览；confirm=true 时驱动草稿箱真实 UI 删除） |

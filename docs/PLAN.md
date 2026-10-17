@@ -361,3 +361,23 @@ create_short_story_tomato(confirm=false) → 校验字数(6000–80000) → 预�
 **工具数** 23 → 27（`+update_novel`、`+import_articles_from_dir`、`+update_novel_info_tomato`、`+update_chapter_tomato`）。
 
 **仍未做（有意）**：标签的「替换 / 删除」语义（当前只做「确保选中」，要删标签得手工去后台）；`get_novel`（读设定走资源 `fanqie://novels`）。
+
+---
+
+## 12. 短故事「修改」补齐（2026-10-17）
+
+起因：梳理 28 项能力时发现三类作品（小说 / 章节 / 短故事）里只有**短故事缺「修改」**——此前要改已发布的短故事，只能用 `publish_short_story_tomato`（`item_id` + `title`/`content`）顺带改，且 `confirm=true` 会一路走到**发布**，没有「只改不发布」的入口。
+
+**新增 `update_short_story_tomato`**（`services/short.ts` 的 `updateShortStory` + `tools/shortStory.ts` 注册）
+- 入口：`/publish-short/{item_id}` 编辑页（复用短故事编辑器的 `SHORT_SELECTORS` 与 `fillTitle` / `fillBody` / `selectCategories` / `chooseUseAI` / `uploadCover` / `saveDraft`）。
+- 只覆盖**显式传入**的字段：`title` / `content`（或 `file_path` / `article_id`）/ `categories` / `cover_path` / `use_ai`；至少给一个，否则报错。
+- `confirm=true` → 填表后**只点「存草稿」**（`action=updated`），**不发布**；要发布另走 `publish_short_story_tomato`。
+- `confirm=false` → 只打开编辑页**读现状 + 截图，完全不填充**（保守：短故事编辑器可能存在自动保存副作用，且目标是已有作品，误填可能改动线上；与 `update_chapter_tomato` 的取舍一致）。读现状走页内 `readShortInPage()`（`edit/v1`）拿标题与字数。
+- 顺手清理：把原 `verifyDraft(page, itemId, title)`（多余的 `title` 形参从未被比较）拆成 `readShortInPage()` + `verifyDraft(page, itemId)`，供预览读现状与存草稿复核共用。
+- `ShortStoryResult.action` 新增 `"updated"`；`article_id` 命中时回写文稿库 `tomatoItemId` / `lastMessage`。
+
+**边界**：已发布的短故事可能不允许再次修改（以页面/后台为准）；页面拿不到名称输入框时返回明确指引（可能不存在 / 不可编辑）。
+
+**验证**：`npm run build` 0 错；`npm run smoke` 全绿（**28 工具** / 8 资源）。
+
+**工具数** 27 → 28（`+update_short_story_tomato`）。**仍未做（有意）**：`get_novel`（读设定走资源 `fanqie://novels`）。

@@ -43,7 +43,7 @@ async function main(): Promise<void> {
   const server = buildServer();
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  logger.info(`${SERVER_NAME} v${SERVER_VERSION} 已就绪（stdio），共注册 27 个工具、8 个只读资源。`);
+  logger.info(`${SERVER_NAME} v${SERVER_VERSION} 已就绪（stdio），共注册 28 个工具、8 个只读资源。`);
 }
 
 main().catch((e) => {

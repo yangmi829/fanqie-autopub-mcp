@@ -368,7 +368,7 @@ export interface CreateShortStoryOptions {
 
 export interface ShortStoryResult {
   ok: boolean;
-  action: "filled-not-submitted" | "draft-saved" | "published" | "aborted" | "error";
+  action: "filled-not-submitted" | "draft-saved" | "updated" | "published" | "aborted" | "error";
   message: string;
   itemId?: string;
   wordCount?: number;
@@ -482,7 +482,7 @@ export async function createShortStory(opts: CreateShortStoryOptions): Promise<S
 
     // 用 edit/v1 复核标题是否落库
     await sleep(1500);
-    const verify = await verifyDraft(page, itemId, opts.title.trim());
+    const verify = await verifyDraft(page, itemId);
     return {
       ok: true,
       action: "draft-saved",
@@ -499,6 +499,144 @@ export async function createShortStory(opts: CreateShortStoryOptions): Promise<S
     await browser.close().catch(() => {});
     logger.error(`新建短故事异常: ${(e as Error).message}`);
     return { ok: false, action: "error", message: `新建短故事失败: ${(e as Error).message}` };
+  } finally {
+    await browser.close().catch(() => {});
+  }
+}
+
+export interface UpdateShortStoryOptions {
+  itemId: string;
+  title?: string;
+  content?: string;
+  categories?: string[];
+  coverPath?: string;
+  useAI?: boolean;
+  confirm?: boolean;
+  headless?: boolean;
+}
+
+/**
+ * 修改「已存在」的短故事（标题 / 正文 / 分类 / 封面 / 是否AI）：打开 /publish-short/{item_id} 编辑页。
+ * 只覆盖**显式传入**的字段，未传的保持线上原值。
+ * - confirm=false：只打开编辑页**读现状 + 截图，完全不填充**（保守：该编辑器可能存在自动保存副作用）。
+ * - confirm=true：填入显式传入的字段 → 点「存草稿」（**只存草稿，不发布**）。
+ * ⚠️ 已发布的短故事可能不允许再次修改（以页面/后台为准）；要重新发布请用 publishShortStory。
+ */
+export async function updateShortStory(opts: UpdateShortStoryOptions): Promise<ShortStoryResult> {
+  const readiness = automationReadiness();
+  if (!readiness.ready) {
+    return { ok: false, action: "aborted", message: `前置条件未满足：\n- ${readiness.reasons.join("\n- ")}` };
+  }
+  if (!opts.itemId) return { ok: false, action: "aborted", message: "缺少 item_id。" };
+
+  const hasField =
+    [opts.title, opts.content].some((v) => v !== undefined && v.trim() !== "") ||
+    (opts.categories?.length ?? 0) > 0 ||
+    !!opts.coverPath ||
+    typeof opts.useAI === "boolean";
+  // confirm=false 允许不带任何字段（纯探现状）；confirm=true 必须给至少一个要改的字段
+  if (opts.confirm && !hasField) {
+    return {
+      ok: false,
+      action: "aborted",
+      message: "至少要提供一个要修改的字段（title / content / categories / cover_path / use_ai）。",
+    };
+  }
+
+  // 只对「显式传入的正文」做字数校验；纯探现状（不带正文）不产生误导性告警
+  const { wordCount, warnings } = opts.content
+    ? validateShortContent(opts.content)
+    : { wordCount: 0, warnings: [] as string[] };
+
+  const session = await openSession(opts.headless ?? true, shortPublishUrl(opts.itemId));
+  if (isError(session)) return { ok: false, action: "aborted", message: session.error };
+  const { browser, page } = session;
+
+  try {
+    const titleSel = await firstMatch(page, SHORT_SELECTORS.title);
+    if (!titleSel) {
+      const file = await shot(page, "short-update-editor-missing");
+      return {
+        ok: false,
+        action: "aborted",
+        message: `未找到短故事编辑页（item_id=${opts.itemId} 可能不存在、或该作品已发布不可编辑）。`,
+        itemId: opts.itemId,
+        url: page.url(),
+        screenshotPath: file,
+      };
+    }
+    await sleep(800);
+
+    // 预览：只读现状，不填充
+    if (!opts.confirm) {
+      const snap = await readShortInPage(page, opts.itemId);
+      const file = await shot(page, "short-update-preview");
+      return {
+        ok: true,
+        action: "filled-not-submitted",
+        message:
+          `已打开 item_id=${opts.itemId} 的编辑页读现状（confirm=false，**未做任何填充**）：` +
+          `当前标题《${snap.title}》，正文≈${snap.wordNumber} 字。确认后传 confirm=true 保存修改（只存草稿，不发布）。`,
+        itemId: opts.itemId,
+        wordCount: snap.wordNumber,
+        url: page.url(),
+        screenshotPath: file,
+        warnings: warnings.length ? warnings : undefined,
+      };
+    }
+
+    // 只覆盖显式传入的字段
+    if (opts.title?.trim()) await fillTitle(page, titleSel, opts.title.trim());
+    if (opts.content) {
+      const bodySel = await firstMatch(page, SHORT_SELECTORS.body);
+      if (!bodySel) warnings.push("未找到正文编辑区，正文未改动。");
+      else await fillBody(page, bodySel, toPlainText(opts.content));
+    }
+    await sleep(800);
+
+    if (typeof opts.useAI === "boolean") await chooseUseAI(page, opts.useAI);
+    if (opts.categories?.length) {
+      const cat = await selectCategories(page, opts.categories);
+      if (cat.missing.length) warnings.push(`未找到分类：${cat.missing.join("、")}`);
+      if (cat.applied.length) logger.info(`[updateShortStory] 已选分类：${cat.applied.join("、")}`);
+    }
+    if (opts.coverPath && !(await uploadCover(page, opts.coverPath))) {
+      warnings.push("封面文件未能上传（未找到上传入口或格式不支持）。");
+    }
+
+    const saved = await saveDraft(page);
+    const file = await shot(page, saved ? "short-update-saved" : "short-update-save-failed");
+    if (!saved) {
+      return {
+        ok: false,
+        action: "error",
+        message: "未能点到「存草稿」按钮（可能页面结构变化或该作品不可编辑）。请到作者后台核对。",
+        itemId: opts.itemId,
+        url: page.url(),
+        screenshotPath: file,
+        warnings: warnings.length ? warnings : undefined,
+      };
+    }
+
+    await sleep(1500);
+    const snap = await readShortInPage(page, opts.itemId);
+    return {
+      ok: true,
+      action: "updated",
+      message:
+        `已保存 item_id=${opts.itemId} 的修改（**只存草稿，未发布**）。` +
+        `当前标题《${snap.title}》，正文≈${snap.wordNumber} 字（传入正文≈${wordCount} 字）。` +
+        `⚠️ 若该短故事已发布，改动可能需要重新审核；要发布请用 publish_short_story_tomato。`,
+      itemId: opts.itemId,
+      wordCount: snap.wordNumber,
+      url: page.url(),
+      screenshotPath: file,
+      warnings: warnings.length ? warnings : undefined,
+    };
+  } catch (e) {
+    await browser.close().catch(() => {});
+    logger.error(`修改短故事异常: ${(e as Error).message}`);
+    return { ok: false, action: "error", message: `修改短故事失败: ${(e as Error).message}` };
   } finally {
     await browser.close().catch(() => {});
   }
@@ -528,26 +666,28 @@ async function saveDraft(page: any): Promise<boolean> {
   return ok;
 }
 
-/** 复核草稿：edit/v1 是否已带标题 */
-async function verifyDraft(page: any, itemId: string, title: string): Promise<{ saved: boolean }> {
+/** 在编辑页内读线上现状（标题 / 正文字数）；只读，不填充任何内容 */
+async function readShortInPage(page: any, itemId: string): Promise<{ title: string; wordNumber: number }> {
   return page
-    .evaluate(
-      async (p: { itemId: string; title: string }) => {
-        try {
-          const r = await fetch(
-            `https://fanqienovel.com/api/author/short_article/edit/v1/?aid=2503&app_name=muye_novel&item_id=${p.itemId}&image_fmt_list=270x480`,
-            { credentials: "include" }
-          );
-          const j: any = await r.json();
-          const t = String(j?.data?.multi_title ?? "");
-          return { saved: t.length > 0 || Number(j?.data?.word_number ?? 0) > 0 };
-        } catch {
-          return { saved: false };
-        }
-      },
-      { itemId, title }
-    )
-    .catch(() => ({ saved: false }));
+    .evaluate(async (id: string) => {
+      try {
+        const r = await fetch(
+          `https://fanqienovel.com/api/author/short_article/edit/v1/?aid=2503&app_name=muye_novel&item_id=${id}&image_fmt_list=270x480`,
+          { credentials: "include" }
+        );
+        const j: any = await r.json();
+        return { title: String(j?.data?.multi_title ?? ""), wordNumber: Number(j?.data?.word_number ?? 0) };
+      } catch {
+        return { title: "", wordNumber: 0 };
+      }
+    }, itemId)
+    .catch(() => ({ title: "", wordNumber: 0 }));
+}
+
+/** 复核草稿：edit/v1 是否已带标题或正文 */
+async function verifyDraft(page: any, itemId: string): Promise<{ saved: boolean }> {
+  const snap = await readShortInPage(page, itemId);
+  return { saved: snap.title.length > 0 || snap.wordNumber > 0 };
 }
 
 /** 上传封面（走页面文件输入框，由页面自身调用 cover/v0 签名） */

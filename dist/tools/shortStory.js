@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { fromService, fail } from "../core/result.js";
-import { listShortStories, getShortStory, createShortStory, publishShortStory, deleteShortStory, setShortStoryCover, validateShortContent, SHORT_MIN_WORDS, SHORT_MAX_WORDS, } from "../services/short.js";
+import { listShortStories, getShortStory, createShortStory, updateShortStory, publishShortStory, deleteShortStory, setShortStoryCover, validateShortContent, SHORT_MIN_WORDS, SHORT_MAX_WORDS, } from "../services/short.js";
 import { articles, nowIso } from "../core/store.js";
 import { resolveContent } from "../services/library.js";
 const categoryShape = z.array(z.string()).optional().describe("作品分类名称（如 婚姻家庭/现言甜宠），主分类必选，最多 8 个");
@@ -74,6 +74,53 @@ export function registerShortStoryTools(server) {
             await articles.update(args.article_id, {
                 status: "published",
                 tomatoItemId: r.itemId,
+                lastMessage: r.message,
+                updatedAt: nowIso(),
+            });
+        }
+        return fromService(r);
+    });
+    server.registerTool("update_short_story_tomato", {
+        title: "修改短故事",
+        description: "改「已存在」短故事的标题 / 正文 / 分类 / 封面 / 是否使用AI（打开 /publish-short/{item_id} 编辑页）。" +
+            "正文可用 content/file_path/article_id；**只覆盖显式传入的字段**，未传的保持线上原值。" +
+            "confirm=true 只点「存草稿」（**不会发布**，且至少要给一个要改的字段）；默认 confirm=false 只打开编辑页读现状 + 截图，**完全不填充**（可只传 item_id 探现状）。" +
+            "⚠️ 已发布的短故事可能不允许再次修改（以页面/后台为准）；要发布请用 publish_short_story_tomato。",
+        inputSchema: {
+            item_id: z.string().describe("要修改的短故事 item_id"),
+            title: z.string().optional().describe("短故事名称（不给＝不改标题）"),
+            content: z.string().optional().describe("正文（与 file_path/article_id 三选一；不给＝不改正文）"),
+            file_path: z.string().optional().describe("正文文件路径（UTF-8 文本）"),
+            article_id: z.string().optional().describe("本地文稿库 article_id（优先于 file_path/content）"),
+            categories: categoryShape,
+            cover_path: z.string().optional().describe("本地封面图片路径（可选）"),
+            use_ai: z.boolean().optional().describe("是否使用AI（不给＝不改）"),
+            confirm: z.boolean().optional().describe("是否真正保存修改，默认 false（只读预览）"),
+            headless: z.boolean().optional().describe("是否无头运行，默认 true"),
+        },
+    }, async (args) => {
+        let content;
+        if (args.content || args.file_path || args.article_id) {
+            try {
+                content = (await pickContent(args)) || undefined;
+            }
+            catch (e) {
+                return fail(e.message);
+            }
+        }
+        const r = await updateShortStory({
+            itemId: args.item_id,
+            title: args.title,
+            content,
+            categories: args.categories,
+            coverPath: args.cover_path,
+            useAI: args.use_ai,
+            confirm: args.confirm,
+            headless: args.headless,
+        });
+        if (args.article_id && r.action === "updated") {
+            await articles.update(args.article_id, {
+                tomatoItemId: args.item_id,
                 lastMessage: r.message,
                 updatedAt: nowIso(),
             });

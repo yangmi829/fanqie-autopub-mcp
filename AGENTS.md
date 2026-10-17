@@ -1,11 +1,11 @@
 # AGENTS.md
 
-番茄小说（fanqienovel.com）作者后台自动发布 MCP 服务：TypeScript + stdio，27 个工具 + 8 个只读资源。
+番茄小说（fanqienovel.com）作者后台自动发布 MCP 服务：TypeScript + stdio，28 个工具 + 8 个只读资源。
 用户侧用法见 `README.md`；**本文件只写"改这个仓库时必须知道的"**。
 
 ## 命令
 - `npm install` → `npm run build`（tsc → `dist/`）→ `npm run smoke`
-- `npm run smoke` 是本仓库**唯一自动化验证**：以 stdio 拉起 `dist/index.js`，走真实 MCP 协议断言 27 工具 / 8 资源 / 本地工具调用，**不触网**（用临时 `FANQIE_DATA_DIR` + `FANQIE_ENABLE_BROWSER=0`）。exit 0 = 全绿。
+- `npm run smoke` 是本仓库**唯一自动化验证**：以 stdio 拉起 `dist/index.js`，走真实 MCP 协议断言 28 工具 / 8 资源 / 本地工具调用，**不触网**（用临时 `FANQIE_DATA_DIR` + `FANQIE_ENABLE_BROWSER=0`）。exit 0 = 全绿。
 - **增删工具或资源后，必须同步更新 `scripts/smoke.mjs` 里的 `EXPECTED_TOOLS` / `EXPECTED_RESOURCES`**，否则冒烟会失败。
 - 没有测试框架（无 jest/vitest），不要去找。
 - 直连 MCP 调试：`node scripts/mcp-cli.mjs --list` / `node scripts/mcp-cli.mjs <tool> key=value` / `--res <uri>`
