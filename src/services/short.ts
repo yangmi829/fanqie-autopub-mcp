@@ -118,11 +118,14 @@ export async function getShortStory(
     await browser.close().catch(() => {});
     if (data?.code !== 0) return { ok: false, message: `接口返回 code=${data?.code} message=${data?.message}` };
     const d = data?.data ?? {};
+    // 实测 edit/v1 在部分账号下会把 item_id 回成 "0"（真值来自请求参数）→ 别把 "0" 当结果返回
+    const apiItemId = String(d.item_id ?? "");
+    const resolvedItemId = apiItemId && apiItemId !== "0" ? apiItemId : itemId;
     return {
       ok: true,
       message: `读取成功：《${d.multi_title ?? ""}》${d.word_number ?? 0} 字`,
       story: {
-        itemId: String(d.item_id ?? itemId),
+        itemId: resolvedItemId,
         title: String(d.multi_title ?? ""),
         content: String(d.content ?? ""),
         wordNumber: Number(d.word_number ?? 0),
@@ -189,7 +192,48 @@ export const SHORT_SELECTORS = {
   ],
   saveDraft: [".short-publish-save", 'button[data-apm-action="core_chain_short_story_save_draft"]'],
   next: [".publish-short-header .btn-primary-varian"],
-  categoryBox: [".publish-short-config-category", '[class*="category"]'],
+} as const;
+
+/**
+ * 「下一步」发布链路的门 & 弹窗选择器（2026-10 逆向 `PublishShort.*.js` 的 `handleClickPublish` + 真机实测）。
+ *
+ * `下一步`（`data-apm-action="core_chain_short_story_next_confirm"`）被点后的校验顺序：
+ * 标题（空格/空/超长/查重）→ 字数（100–100000）→ 推荐标题 → **封面** → 分类（含主分类、≤8）
+ * → **试读比例**（≥30% 且校验通过）→ **发布协议**（已勾选）→ 审核不通过内容 → **是否使用AI**
+ * → 章节格式/错别字（弹「发布提示」→「继续发布」）→ 「提交确认」→ 点「确定」= 真发布。
+ *
+ * 任一必填项缺失时只弹一个 **3 秒就消失的 toast**（`请上传封面` / `请选择是否使用 AI` / …），
+ * 所以「点了下一步没反应」几乎都是这些门没补齐——不要按「按钮坏了」处理。
+ */
+export const SHORT_PUBLISH_SELECTORS = {
+  /** 封面设置区（点它开「制作封面 / 本地上传」抽屉） */
+  coverTrigger: '[class*="publish-short-config-book-cover-content"]',
+  /** 封面已设置（未设置时该 class 不存在） */
+  coverSet: '[class*="publish-short-config-book-cover-content-notempty"]',
+  /** 抽屉里的 tab：⚠️ 不是 .arco-tabs-tab，实测是 div[role="tab"].arco-tabs-header-title */
+  drawerTab: '[role="tab"]',
+  /** 试读比例「去设置」（点它会在正文里落一条默认 30% 试读线） */
+  paySetup: ".publish-short-config-pay-location-noicon",
+  /** 是否使用AI 单选组容器 */
+  useAi: '[class*="publish_short_config_use_ai"]',
+  /** 发布协议文字（必须真实鼠标点击，会弹「短故事发布事项」） */
+  licenseDesc: ".publish-short-config-checkdesc",
+} as const;
+
+/**
+ * 作品分类选择器（2026-10 实测二级浮层）：
+ * 点 `.publish-short-category-select` 打开 `.publish-short-category-select-pop`；
+ * 左侧 5 个组标题 `.publish-short-category-select-label`（主分类/情节/角色/情绪/背景），
+ * 右侧 5 个 `.publish-short-category-select-item-list`（与组**同序**渲染，但只有激活组可见），
+ * 组内选项 `.publish-short-category-select-item`（文本即分类名）。
+ */
+export const SHORT_CATEGORY_SELECTORS = {
+  trigger: ".publish-short-category-select",
+  pop: ".publish-short-category-select-pop",
+  label: ".publish-short-category-select-label",
+  itemList: ".publish-short-category-select-item-list",
+  item: ".publish-short-category-select-item",
+  selectedList: ".publish-short-category-select-selected-list",
 } as const;
 
 async function firstMatch(page: any, selectors: readonly string[]): Promise<string | null> {
@@ -294,34 +338,45 @@ async function clickButtonByText(page: any, label: string): Promise<boolean> {
   return true;
 }
 
-/** 选「是否使用AI」单选 */
+/**
+ * 选「是否使用AI」单选（发布必填项；不选则「下一步」弹「请选择是否使用 AI」并中止）。
+ * 实测：容器 class 含 `publish_short_config_use_ai`，里面是 `label.arco-radio` 的「是 / 否」。
+ */
 async function chooseUseAI(page: any, useAI: boolean): Promise<boolean> {
   const label = useAI ? "是" : "否";
-  return page
-    .evaluate((t: string) => {
-      const groups = Array.from(document.querySelectorAll(".arco-radio-group")) as any[];
-      // 取包含「是/否」且标题含「AI」的一组（其余单选组如协议不作为目标）
-      const scope =
-        groups.find((g) => {
-          const text = (g.closest('[class*="block-item"]')?.textContent || "") + (g.parentElement?.textContent || "");
-          return /使用AI|AI/.test(text);
-        }) || groups.find((g) => /(^|\D)是(\D|$)/.test(g.textContent || ""));
-      if (!scope) return false;
-      const lab = (Array.from(scope.querySelectorAll("label")) as any[]).find(
+  const clicked = await page
+    .evaluate((t: string, sel: string) => {
+      const boxes = Array.from(document.querySelectorAll(sel)) as any[];
+      const box = boxes.find((b) => b.querySelectorAll("label").length > 0);
+      if (!box) return false;
+      const lab = (Array.from(box.querySelectorAll("label")) as any[]).find(
         (l: any) => (l.textContent || "").trim() === t
       ) as any;
       if (!lab) return false;
       const input = lab.querySelector('input[type="radio"]');
       if (input) (input as any).click();
-      else lab.click();
+      lab.click();
       return true;
-    }, label)
+    }, label, SHORT_PUBLISH_SELECTORS.useAi)
+    .catch(() => false);
+  if (!clicked) return false;
+  await sleep(600);
+  return page
+    .evaluate((sel: string) => {
+      const box = document.querySelector(sel);
+      if (!box) return false;
+      return (Array.from(box.querySelectorAll("label.arco-radio")) as any[]).some(
+        (l: any) => (l.querySelector("input") as any)?.checked
+      );
+    }, SHORT_PUBLISH_SELECTORS.useAi)
     .catch(() => false);
 }
 
 /**
  * 选作品分类（主分类必选，最多 8 个）。
- * 分类选择器是一组可点击的标签，按分类名精确文本点击。返回实际选中/未找到。
+ * 实测（2026-10）：不是「点标签」，而是**二级浮层**——必须先点开浮层，
+ * 再按分类名反查它在第几组（组与选项列表同序），**激活该组**，最后点该组内的选项。
+ * 返回实际选中 / 未找到（以浮层里的已选列表回读为准）。
  */
 async function selectCategories(
   page: any,
@@ -330,26 +385,130 @@ async function selectCategories(
   const applied: string[] = [];
   const missing: string[] = [];
   if (!names.length) return { applied, missing };
-  for (const name of names) {
-    const ok = await page
-      .evaluate((t: string) => {
-        const cand = Array.from(
-          document.querySelectorAll(
-            '[class*="category"] span, [class*="category"] div, [class*="category"] label'
-          )
-        ) as any[];
-        const el = cand.find((e: any) => e.children.length === 0 && (e.textContent || "").trim() === t);
-        if (el) {
-          el.click();
-          return true;
-        }
-        return false;
-      }, name)
-      .catch(() => false);
-    if (ok) applied.push(name);
-    else missing.push(name);
-    await sleep(300);
+  const S = SHORT_CATEGORY_SELECTORS;
+
+  // 1) 打开浮层（选项是点开后才渲染的）
+  const ensurePop = async (): Promise<boolean> => {
+    if (await page.$(S.pop)) return true;
+    await page.click(S.trigger).catch(() => {});
+    const deadline = Date.now() + 8000;
+    while (Date.now() < deadline) {
+      if (await page.$(S.pop)) return true;
+      await sleep(300);
+    }
+    return false;
+  };
+  if (!(await ensurePop())) {
+    logger.warn("[selectCategories] 未能打开作品分类浮层");
+    return { applied, missing: [...names] };
   }
+
+  for (const name of names) {
+    // 实测：每选一个，浮层会收起 → 下一个分类前必须重新打开
+    if (!(await ensurePop())) {
+      missing.push(name);
+      continue;
+    }
+
+    // 2) 找该分类所在组的序号（5 组全量渲染，但只有激活组可见）
+    const groupIdx: number = await page
+      .evaluate(
+        (t: string, s: any) => {
+          const lists = Array.from(document.querySelectorAll(s.itemList)) as any[];
+          for (let i = 0; i < lists.length; i++) {
+            const hit = (Array.from(lists[i].querySelectorAll(s.item)) as any[]).some(
+              (e: any) => (e.textContent || "").trim() === t
+            );
+            if (hit) return i;
+          }
+          return -1;
+        },
+        name,
+        S
+      )
+      .catch(() => -1);
+    if (groupIdx < 0) {
+      missing.push(name);
+      continue;
+    }
+
+    // 3) 激活该组（真实鼠标事件——arco 的组切换对 JS click 不敏感，必须 hover）
+    const labeled: boolean = await page
+      .evaluate(
+        (i: number, s: any) => {
+          const labels = document.querySelectorAll(s.label);
+          const lab = labels[i];
+          if (!lab) return false;
+          lab.setAttribute("data-autopub-catlabel", "1");
+          return true;
+        },
+        groupIdx,
+        S
+      )
+      .catch(() => false);
+    if (!labeled) {
+      missing.push(name);
+      continue;
+    }
+    await page.hover('[data-autopub-catlabel="1"]').catch(() => {});
+    await sleep(250);
+    await page.click('[data-autopub-catlabel="1"]').catch(() => {});
+    await page
+      .evaluate(() => document.querySelector('[data-autopub-catlabel="1"]')?.removeAttribute("data-autopub-catlabel"))
+      .catch(() => {});
+    await sleep(500);
+
+    // 4) 点该组内的选项（真实鼠标点击，SPA 依赖真实事件）；组未切过来（不可见）则再等一拍
+    const findItem = () =>
+      page
+        .evaluate(
+          (t: string, s: any, i: number) => {
+            const lists = document.querySelectorAll(s.itemList);
+            const list = lists[i];
+            if (!list) return false;
+            const el = (Array.from(list.querySelectorAll(s.item)) as any[]).find(
+              (e: any) => (e.textContent || "").trim() === t
+            );
+            if (!el || el.offsetParent === null) return false;
+            el.setAttribute("data-autopub-cat", "1");
+            return true;
+          },
+          name,
+          S,
+          groupIdx
+        )
+        .catch(() => false);
+
+    let ready: boolean = await findItem();
+    if (!ready) {
+      await sleep(700);
+      ready = await findItem();
+    }
+    if (!ready) {
+      logger.warn(`[selectCategories] 组 #${groupIdx} 内未找到可见选项「${name}」`);
+      missing.push(name);
+      continue;
+    }
+    await page.click('[data-autopub-cat="1"]').catch(() => {});
+    await page
+      .evaluate(() => document.querySelector('[data-autopub-cat="1"]')?.removeAttribute("data-autopub-cat"))
+      .catch(() => {});
+    await sleep(400);
+  }
+
+  // 5) 回读浮层里的已选列表（真实结果），并收起浮层
+  const selectedText: string = await page
+    .evaluate((s: any) => (document.querySelector(s.selectedList)?.textContent || "").trim(), S)
+    .catch(() => "");
+  await page.keyboard.press("Escape").catch(() => {});
+  await sleep(300);
+
+  for (const name of names) {
+    if (selectedText.includes(name)) applied.push(name);
+    else missing.push(name);
+  }
+  if (applied.length) logger.info(`[selectCategories] 已选分类：${applied.join("、")}`);
+  if (missing.length) logger.warn(`[selectCategories] 未选中：${missing.join("、")}（已选列表=${selectedText}）`);
   return { applied, missing };
 }
 
@@ -642,6 +801,150 @@ export async function updateShortStory(opts: UpdateShortStoryOptions): Promise<S
   }
 }
 
+/**
+ * JS 点击按钮（按文本）。实测：封面抽屉关掉后会留一层遮罩，**真实鼠标点击会被它吃掉**，
+ * 而 `element.click()` 不受影响 → 发布链路里凡是在封面之后的按钮一律走这里。
+ */
+async function jsClickButton(page: any, label: string): Promise<boolean> {
+  return page
+    .evaluate((t: string) => {
+      const b = (Array.from(document.querySelectorAll("button")) as any[]).find(
+        (x: any) => (x.textContent || "").trim() === t && x.getBoundingClientRect().height >= 0
+      );
+      if (!b) return false;
+      b.scrollIntoView({ block: "center" });
+      b.click();
+      return true;
+    }, label)
+    .catch(() => false);
+}
+
+/** 轮询 cond 直到返回真值（或超时）；用于一切「等元素出现」的场景 */async function waitFor<T>(cond: () => Promise<T | null | false>, timeoutMs = 15000, stepMs = 800): Promise<T | null> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const v = await cond().catch(() => null);
+    if (v) return v as T;
+    await sleep(stepMs);
+  }
+  return null;
+}
+
+/** 读当前页面上的 toast（`te.A.warning` 类提示 3 秒后自动消失，必须及时抓） */
+async function readToasts(page: any): Promise<string[]> {
+  return page
+    .evaluate(() =>
+      (Array.from(document.querySelectorAll('[class*="arco-message"], [class*="arco-alert"]')) as any[])
+        .map((e: any) => (e.textContent || "").replace(/\s+/g, " ").trim().slice(0, 100))
+        .filter(Boolean)
+    )
+    .catch(() => []);
+}
+
+/**
+ * 勾「发布协议」——「下一步」的硬门之一（`if (!S) { 高亮 signLicense; return }`）。
+ *
+ * 实测（2026-10）：这个复选框是自绘组件，JS click（input / label / mask）**点不上**；
+ * 唯一有效路径是**真实鼠标点击协议文字** `.publish-short-config-checkdesc`
+ * → 弹「短故事发布事项」→ 点其中「我已阅读并同意」→ 复选框才变 checked。
+ *
+ * ⚠️ 必须排在**打开封面抽屉之前**：抽屉关闭后残留的遮罩会吃掉后续所有真实鼠标点击
+ * （JS click 不受影响，所以其它步骤看起来都正常）。
+ */
+async function acceptPublishTerms(page: any): Promise<boolean> {
+  const isChecked = () =>
+    page.evaluate(() => !!document.querySelector("label.arco-checkbox input")?.checked).catch(() => false);
+  if (await isChecked()) return true;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    await page.click(SHORT_PUBLISH_SELECTORS.licenseDesc).catch(() => {});
+    await waitFor(
+      () =>
+        page.evaluate(() => {
+          const b = (Array.from(document.querySelectorAll("button")) as any[]).find(
+            (x: any) => /我已阅读并同意/.test(x.textContent || "") && x.getBoundingClientRect().height > 0
+          );
+          if (!b) return false;
+          b.click();
+          return true;
+        }),
+      8000,
+      600
+    );
+    await sleep(1200);
+    if (await isChecked()) return true;
+    logger.warn(`[short] 第 ${attempt} 次勾「发布协议」未生效`);
+  }
+  return false;
+}
+
+/**
+ * 设置「试读比例」——「下一步」的硬门之一（`payNode` 为空 / 阈值非法都会拦）。
+ * 实测：点「去设置」会在正文里落一条默认 **30%** 试读线（`window.adapter.getExistNodes("payNode")` 立刻变 1）；
+ * 该试读线**不会**随「存草稿」持久化，所以每次发布前都要现点一次。
+ */
+async function ensurePayNode(page: any): Promise<boolean> {
+  const hasNode = () =>
+    page
+      .evaluate(() => {
+        try {
+          return window.adapter.getExistNodes("payNode").length > 0;
+        } catch {
+          return false;
+        }
+      })
+      .catch(() => false);
+  if (await hasNode()) return true;
+  await clickButtonByText(page, "去设置");
+  return !!(await waitFor(hasNode, 15000, 800));
+}
+
+/** 封面是否已设置（封面设置区带 -notempty class） */
+async function coverIsSet(page: any): Promise<boolean> {
+  return page.evaluate((sel: string) => !!document.querySelector(sel), SHORT_PUBLISH_SELECTORS.coverSet).catch(() => false);
+}
+
+/** 读「下一步」的四个必填门：封面 / 是否使用AI / 发布协议 / 试读比例 */
+async function readPublishGates(page: any): Promise<{ cover: boolean; useAI: boolean; license: boolean; payNode: boolean }> {
+  return page
+    .evaluate((sel: { coverSet: string; useAi: string }) => {
+      const box = document.querySelector(sel.useAi);
+      let payNode = false;
+      try {
+        payNode = window.adapter.getExistNodes("payNode").length > 0;
+      } catch {
+        payNode = false;
+      }
+      return {
+        cover: !!document.querySelector(sel.coverSet),
+        useAI: !!(box && (Array.from(box.querySelectorAll("label.arco-radio")) as any[]).some((l: any) => (l.querySelector("input") as any)?.checked)),
+        license: !!document.querySelector("label.arco-checkbox input")?.checked,
+        payNode,
+      };
+    }, { coverSet: SHORT_PUBLISH_SELECTORS.coverSet, useAi: SHORT_PUBLISH_SELECTORS.useAi })
+    .catch(() => ({ cover: false, useAI: false, license: false, payNode: false }));
+}
+
+/** 点「提交确认」弹窗页脚的主按钮（确定）——这一步才真正提交发布 */
+async function clickConfirmModalOk(page: any): Promise<boolean> {
+  return !!(await waitFor(
+    () =>
+      page.evaluate(() => {
+        const m = (Array.from(document.querySelectorAll(".arco-modal")) as any[]).find(
+          (x: any) => x.getBoundingClientRect().height > 40 && /提交确认/.test(x.textContent || "")
+        ) as any;
+        if (!m) return false;
+        const visible = (bs: any[]) => bs.filter((b: any) => b.getBoundingClientRect().height > 0);
+        const footer = visible(Array.from(m.querySelectorAll(".arco-modal-footer button")) as any[]);
+        const pool = footer.length ? footer : visible(Array.from(m.querySelectorAll("button")) as any[]);
+        const ok = pool.find((b: any) => /确定|确认|提交|发布/.test(b.textContent || "")) || pool[pool.length - 1];
+        if (!ok) return false;
+        ok.click();
+        return true;
+      }),
+    20000,
+    1200
+  ));
+}
+
 /** 点「存草稿」，等待其发出 cover/v0 请求并返回是否成功 */
 async function saveDraft(page: any): Promise<boolean> {
   const saveSel = await firstMatch(page, SHORT_SELECTORS.saveDraft);
@@ -659,15 +962,29 @@ async function saveDraft(page: any): Promise<boolean> {
     page.on("response", onResp);
     setTimeout(() => resolve(false), 20000);
   });
-  if (saveSel) await page.click(saveSel).catch(() => {});
-  else await clickButtonByText(page, "存草稿");
+  if (saveSel)
+    await page
+      .evaluate((sel: string) => {
+        const el = document.querySelector(sel);
+        if (el) {
+          (el as any).scrollIntoView({ block: "center" });
+          (el as any).click();
+          return true;
+        }
+        return false;
+      }, saveSel)
+      .catch(() => {});
+  else await jsClickButton(page, "存草稿");
   const ok = await done;
   await sleep(1000);
   return ok;
 }
 
-/** 在编辑页内读线上现状（标题 / 正文字数）；只读，不填充任何内容 */
-async function readShortInPage(page: any, itemId: string): Promise<{ title: string; wordNumber: number }> {
+/** 在编辑页内读线上现状（标题 / 字数 / 发布状态 / 封面）；只读，不填充任何内容 */
+async function readShortInPage(
+  page: any,
+  itemId: string
+): Promise<{ title: string; wordNumber: number; publishStatus: number; displayStatus: number; bookThumbUri: string }> {
   return page
     .evaluate(async (id: string) => {
       try {
@@ -676,12 +993,18 @@ async function readShortInPage(page: any, itemId: string): Promise<{ title: stri
           { credentials: "include" }
         );
         const j: any = await r.json();
-        return { title: String(j?.data?.multi_title ?? ""), wordNumber: Number(j?.data?.word_number ?? 0) };
+        return {
+          title: String(j?.data?.multi_title ?? ""),
+          wordNumber: Number(j?.data?.word_number ?? 0),
+          publishStatus: Number(j?.data?.publish_status ?? 0),
+          displayStatus: Number(j?.data?.display_status ?? 0),
+          bookThumbUri: String(j?.data?.book_thumb_uri ?? ""),
+        };
       } catch {
-        return { title: "", wordNumber: 0 };
+        return { title: "", wordNumber: 0, publishStatus: 0, displayStatus: 0, bookThumbUri: "" };
       }
     }, itemId)
-    .catch(() => ({ title: "", wordNumber: 0 }));
+    .catch(() => ({ title: "", wordNumber: 0, publishStatus: 0, displayStatus: 0, bookThumbUri: "" }));
 }
 
 /** 复核草稿：edit/v1 是否已带标题或正文 */
@@ -690,14 +1013,83 @@ async function verifyDraft(page: any, itemId: string): Promise<{ saved: boolean 
   return { saved: snap.title.length > 0 || snap.wordNumber > 0 };
 }
 
-/** 上传封面（走页面文件输入框，由页面自身调用 cover/v0 签名） */
+/**
+ * 上传封面（2026-10 实测链路，由页面自身调 `cover/v0` 签名）：
+ * 点「封面设置」区开抽屉 → 切「本地上传」tab → 勾「我已阅读并同意《字体许可使用协议》《图片上传协议》」
+ * → 塞文件 → 点「确认上传」→（部分版本还要点「确定」）→ 校验封面已设置。
+ *
+ * ⚠️ 两点坑：① 抽屉 tab 不是 `.arco-tabs-tab`，而是 `div[role="tab"].arco-tabs-header-title`；
+ * ② 抽屉关闭后残留遮罩会吃掉后续**真实鼠标点击**，所以本方法应排在「发布协议」之后执行。
+ */
 async function uploadCover(page: any, filePath: string): Promise<boolean> {
   try {
-    const inputs = await page.$$('input[type="file"]');
-    if (!inputs.length) return false;
-    await inputs[0].uploadFile(filePath);
-    await sleep(3000);
-    return true;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      if (await coverIsSet(page)) return true;
+
+      // ① 开抽屉
+      await page
+        .evaluate((sel: string) => {
+          const el = document.querySelector(sel);
+          if (el) {
+            (el as any).scrollIntoView({ block: "center" });
+            (el as any).click();
+          }
+        }, SHORT_PUBLISH_SELECTORS.coverTrigger)
+        .catch(() => {});
+
+      // ② 切「本地上传」tab（等它渲染出来）
+      const tabOk = await waitFor(
+        () =>
+          page.evaluate((sel: string) => {
+            const t = (Array.from(document.querySelectorAll(sel)) as any[]).find((e: any) =>
+              /本地上传/.test(e.textContent || "")
+            );
+            if (!t) return false;
+            t.setAttribute("data-autopub-cover-tab", "1");
+            return true;
+          }, SHORT_PUBLISH_SELECTORS.drawerTab),
+        12000,
+        1000
+      );
+      if (!tabOk) continue;
+      await page.click('[data-autopub-cover-tab="1"]').catch(() => {});
+
+      // ③ 等文件输入框（切到「本地上传」后才渲染）
+      const hasInput = await waitFor(async () => (await page.$('input[type="file"]')) !== null, 15000, 1000);
+      if (!hasInput) continue;
+
+      // ④ 勾抽屉里的图片上传协议
+      await waitFor(
+        () =>
+          page.evaluate(() => {
+            const lab = (Array.from(document.querySelectorAll("label.arco-checkbox")) as any[]).find((l: any) =>
+              /我已阅读并同意/.test(l.textContent || "")
+            );
+            if (!lab) return false;
+            const input = lab.querySelector("input");
+            if (input && !input.checked) input.click();
+            return !!input?.checked;
+          }),
+        12000,
+        1000
+      );
+
+      // ⑤ 塞文件 → 点「确认上传」
+      const inputs = await page.$$('input[type="file"]');
+      if (!inputs.length) continue;
+      await inputs[0].uploadFile(filePath);
+      const uploaded = await waitFor(() => jsClickButton(page, "确认上传"), 30000, 1500);
+      if (!uploaded) continue;
+      await sleep(4000);
+      if (await coverIsSet(page)) return true;
+
+      // ⑥ 部分版本「确认上传」后还有一层「确定」
+      await jsClickButton(page, "确定");
+      await sleep(3000);
+      if (await coverIsSet(page)) return true;
+      logger.warn(`[short] 封面第 ${attempt} 次上传后仍未读到已设置状态，重试`);
+    }
+    return false;
   } catch (e) {
     logger.warn(`上传封面失败: ${(e as Error).message}`);
     return false;
@@ -723,7 +1115,12 @@ export interface PublishShortStoryOptions {
  * 发布短故事。
  * 若给 itemId：打开 /publish-short/{itemId}，按需补正文/信息后走发布。
  * 若不给 itemId 而给 title/content：先在空白页建 item 再填再发。
- * confirm=false 只填表；confirm=true 才点「下一步」→「发布」。
+ * confirm=false 只填表；confirm=true 才补齐必填门 → 存草稿 → 下一步 →（发布提示）→ 提交确认 → 发布。
+ *
+ * `下一步` 的必填门（2026-10 逆向 `PublishShort.*.js` 的 `handleClickPublish` 实测）：
+ * 标题（空/空格/超长/查重）→ 字数 → 封面 → 分类（含主分类）→ 试读比例 → 发布协议 → 是否使用AI。
+ * 缺项只会弹 3 秒即消失的 toast，所以本方法先补齐、再用 `readPublishGates` 自检，缺项直接给出明确原因。
+ * 封面与「是否使用AI」是内容/合规决策，工具不替用户猜：封面靠 cover_path（或沿用已有），AI 必须显式传 useAI。
  * ⚠️ 发布可能触发实名/人脸验证，命中时只提示、不硬闯。
  */
 export async function publishShortStory(opts: PublishShortStoryOptions): Promise<ShortStoryResult> {
@@ -762,16 +1159,16 @@ export async function publishShortStory(opts: PublishShortStoryOptions): Promise
       if (bodySel) await fillBody(page, bodySel, toPlainText(content));
     }
     await sleep(800);
-    if (typeof opts.useAI === "boolean") await chooseUseAI(page, opts.useAI);
     if (opts.categories?.length) {
       const cat = await selectCategories(page, opts.categories);
       if (cat.missing.length) warnings.push(`未找到分类：${cat.missing.join("、")}`);
     }
-    if (opts.coverPath && !(await uploadCover(page, opts.coverPath))) {
-      warnings.push("封面文件未能上传。");
-    }
 
     if (!opts.confirm) {
+      if (typeof opts.useAI === "boolean") await chooseUseAI(page, opts.useAI);
+      if (opts.coverPath && !(await uploadCover(page, opts.coverPath))) {
+        warnings.push("封面文件未能上传。");
+      }
       const file = await shot(page, "short-publish-filled");
       return {
         ok: true,
@@ -788,17 +1185,70 @@ export async function publishShortStory(opts: PublishShortStoryOptions): Promise
       };
     }
 
-    // 先存草稿确保正文/信息落库，再点发布
+    // ---- confirm=true：把「下一步」的四个必填门逐个补齐（2026-10 逆向 PublishShort.*.js + 真机实测）----
+    // 顺序有讲究：①「发布协议」只有**真实鼠标点协议文字**才勾得上，且必须排在打开封面抽屉**之前**，
+    // 因为抽屉关掉后残留的遮罩会吃掉后续所有真实鼠标点击（JS click 不受影响，故其它步骤照旧能跑）。
+    if (typeof opts.useAI !== "boolean") {
+      const file = await shot(page, "short-useai-missing");
+      return {
+        ok: false,
+        action: "aborted",
+        message: "平台强制要求声明「是否使用AI」：发布必须显式指定 use_ai（true=是 / false=否），工具不替你猜。",
+        itemId,
+        url: page.url(),
+        screenshotPath: file,
+        warnings: warnings.length ? warnings : undefined,
+      };
+    }
+    if (!(await acceptPublishTerms(page))) warnings.push("未能勾上「发布协议」，发布可能被拦（已重试 3 次）。");
+    if (!(await chooseUseAI(page, opts.useAI))) warnings.push("未能选中「是否使用AI」。");
+    if (!(await ensurePayNode(page))) warnings.push("未能设置「试读比例」（点「去设置」后未出现试读线）。");
+    if (opts.coverPath && !(await uploadCover(page, opts.coverPath))) {
+      warnings.push("封面文件未能上传。");
+    }
+
+    // 存草稿把 标题/正文/分类/封面 落库
     await saveDraft(page);
     await sleep(1500);
 
-    // 检测是否被要求实名/人脸验证
-    const needAuth = await page
-      .evaluate(() => /实名|人脸|认证|身份验证/.test(document.body?.innerText || ""))
-      .catch(() => false);
+    // 发布前自检：没补齐的门只会让「下一步」弹一个 3 秒即消失的 toast，先查出来省得白跑
+    const gates = await readPublishGates(page);
+    const missingGates: string[] = [];
+    if (!gates.license) missingGates.push("发布协议未勾选");
+    if (!gates.useAI) missingGates.push("是否使用AI 未选");
+    if (!gates.payNode) missingGates.push("试读比例未设置");
+    if (!gates.cover) missingGates.push("未上传封面（传 cover_path 上传）");
+    if (missingGates.length) {
+      const file = await shot(page, "short-gates-missing");
+      return {
+        ok: false,
+        action: "aborted",
+        message: `发布必填项未补齐：${missingGates.join("；")}。正文/信息已存草稿（item_id=${itemId}），补齐后再发布。`,
+        itemId,
+        url: page.url(),
+        screenshotPath: file,
+        warnings: warnings.length ? warnings : undefined,
+      };
+    }
 
-    const clickedNext = (await clickButtonByText(page, "下一步")) || (await clickNextBySelector(page));
+    // 「下一步」会先打 short_article/check_pre 做前置校验（标题查重等）。
+    // 校验不过时页面只弹红条、不跳转 → 必须抓这个响应，否则会误报「已发布」。
+    let precheck: string | null = null;
+    const onPrecheck = async (resp: any) => {
+      if (!/short_article\/check_pre/.test(resp.url())) return;
+      try {
+        const j = JSON.parse(await resp.text());
+        const hit = (j?.data?.check_resp_list || []).find((c: any) => c?.is_hit);
+        if (hit) precheck = String(hit.hit_message || "前置校验未通过");
+      } catch {
+        /* 响应非 JSON 时忽略 */
+      }
+    };
+    page.on("response", onPrecheck);
+
+    const clickedNext = (await jsClickButton(page, "下一步")) || (await clickNextBySelector(page));
     if (!clickedNext) {
+      page.off("response", onPrecheck);
       const file = await shot(page, "short-next-missing");
       return {
         ok: false,
@@ -811,7 +1261,36 @@ export async function publishShortStory(opts: PublishShortStoryOptions): Promise
       };
     }
     await sleep(2500);
+    // 必填门没补齐时页面只弹 3 秒即消失的 toast（「请上传封面」/「请选择是否使用 AI」…），先抓下来
+    const gateToasts = (await readToasts(page)).filter((t) => !/审核工作时间/.test(t));
+    if (gateToasts.length) warnings.push(`发布前页面提示：${gateToasts.join(" / ")}`);
+    page.off("response", onPrecheck);
 
+    if (precheck) {
+      const file = await shot(page, "short-precheck-blocked");
+      return {
+        ok: false,
+        action: "aborted",
+        message:
+          `发布前置校验未通过：${precheck}。正文/信息已存草稿（item_id=${itemId}），` +
+          `改掉该项后再发布（例如换标题），或用 publish_short_story_tomato 传新 title 重试。`,
+        itemId,
+        url: page.url(),
+        screenshotPath: file,
+        warnings: warnings.length ? warnings : undefined,
+      };
+    }
+
+    // 「下一步」后平台可能弹「发布提示」（章节格式 / 错别字等自检）→ 点「继续发布」才进「提交确认」
+    if (await waitFor(async () => (await jsClickButton(page, "继续发布")) || (await clickButtonByText(page, "继续发布")), 10000, 1000)) {
+      warnings.push("平台弹出「发布提示」（章节格式/错别字自检），已点「继续发布」继续。");
+      await sleep(6000);
+    }
+
+    // 实名/人脸：命中就停手，不硬闯
+    const needAuth = await page
+      .evaluate(() => /实名|人脸|认证|身份验证/.test(document.body?.innerText || ""))
+      .catch(() => false);
     if (needAuth) {
       const file = await shot(page, "short-realname-required");
       return {
@@ -825,14 +1304,39 @@ export async function publishShortStory(opts: PublishShortStoryOptions): Promise
       };
     }
 
-    const published = await clickPublish(page);
-    const file = await shot(page, published ? "short-published" : "short-publish-result");
+    // 「提交确认」弹窗 → 点页脚主按钮（确定）才是真正提交
+    if (!(await clickConfirmModalOk(page))) {
+      const file = await shot(page, "short-confirm-missing");
+      return {
+        ok: false,
+        action: "aborted",
+        message:
+          `未等到「提交确认」弹窗，未提交发布。` +
+          `正文/信息已存草稿（item_id=${itemId}），可到草稿箱手动完成发布（草稿箱 → 下一步 → 确定）。`,
+        itemId,
+        url: page.url(),
+        screenshotPath: file,
+        warnings: warnings.length ? warnings : undefined,
+      };
+    }
+
+    // 复核：edit/v1 的 publish_status 变 1 才算真发布（成功页会出现「返回短故事管理 / 再写一篇」）
+    const verified = await waitFor(
+      async () => {
+        const snap = await readShortInPage(page, itemId);
+        return snap.publishStatus === 1 ? snap : null;
+      },
+      30000,
+      3000
+    );
+    const file = await shot(page, verified ? "short-published" : "short-publish-result");
     return {
-      ok: published,
-      action: published ? "published" : "error",
-      message: published
-        ? `已提交发布 item_id=${itemId}（以作者后台列表复核为准）。`
-        : `已走完发布流程，但未确认到「发布」按钮被成功点击。请到短故事列表/草稿箱核对。`,
+      ok: !!verified,
+      action: verified ? "published" : "error",
+      message: verified
+        ? `已发布 item_id=${itemId}（后台 publish_status=1）。` +
+          `⚠️ 番茄审核工作时间 7:00-24:00：夜间提交会卡在「审核中」直至次日早上 7-9 点。`
+        : `发布流程已走完，但 edit/v1 的 publish_status 仍未变为 1，请到短故事列表/草稿箱核对。`,
       itemId,
       url: page.url(),
       screenshotPath: file,
@@ -854,18 +1358,11 @@ async function clickNextBySelector(page: any): Promise<boolean> {
   return true;
 }
 
-/** 在发布确认步骤里点「发布」/「确认发布」/「提交」 */
-async function clickPublish(page: any): Promise<boolean> {
-  for (const label of ["发布", "确认发布", "提交", "确认提交"]) {
-    if (await clickButtonByText(page, label)) return true;
-  }
-  return false;
-}
-
 /* ------------------------------ 封面 ------------------------------ */
 
 /**
- * 为已有短故事设置封面：打开其编辑页，通过文件上传入口上传本地图片（由页面自身调用 cover/v0 签名）。
+ * 为已有短故事设置封面：打开其编辑页，走「封面设置 → 本地上传」抽屉上传本地图片
+ * （由页面自身调用 cover/v0 签名；抽屉的 tab / 协议勾选 / 确认上传 细节见 `uploadCover`）。
  * confirm=false 只上传预览不改库；confirm=true 上传后再点「存草稿」持久化。
  */
 export async function setShortStoryCover(
@@ -891,7 +1388,7 @@ export async function setShortStoryCover(
       return {
         ok: false,
         action: "aborted",
-        message: "未找到封面上传入口（input[type=file]）。可能需先点开「封面设置」区域，或页面改版。",
+        message: "封面未能上传（重试 3 次仍失败）。多为「封面设置 → 本地上传」抽屉结构变化，或图片格式/尺寸不符。",
         itemId,
         url: page.url(),
         screenshotPath: file,

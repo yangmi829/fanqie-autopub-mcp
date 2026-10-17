@@ -271,7 +271,7 @@ create_short_story_tomato(confirm=false) → 校验字数(6000–80000) → 预�
 - [ ] `create_novel_tomato(confirm=false)` 返回预览；`confirm=true` 建书成功并返回 `book_id`
 - [ ] `add_chapter_tomato(confirm=false)` 截图可见序号/标题/正文已正确填入
 - [ ] `create_short_story_tomato(confirm=true)` 能在草稿箱看到新短故事
-- [ ] `publish_short_story_tomato(confirm=true)` 发布后列表复核可见该短故事
+- [x] `publish_short_story_tomato(confirm=true)` 发布后列表复核可见该短故事（2026-10-18 首发《青石巷的第三十八步》通过；见 §13）
 - [ ] 写操作默认不提交；失败有截图；日志走 stderr
 
 ---
@@ -381,3 +381,41 @@ create_short_story_tomato(confirm=false) → 校验字数(6000–80000) → 预�
 **验证**：`npm run build` 0 错；`npm run smoke` 全绿（**28 工具** / 8 资源）。
 
 **工具数** 27 → 28（`+update_short_story_tomato`）。**仍未做（有意）**：`get_novel`（读设定走资源 `fanqie://novels`）。
+
+---
+
+## 13. 短故事发布链路修正：四个必填门（2026-10-17/18）
+
+背景：真机首发《青石巷的第三十八步》时，点「下一步」**毫无反应**，一度误判为「按钮坏了 / 需要腾空标题绕查重」。
+
+**根因**：下载编辑页打包文件 `PublishShort.9431f235.js` 反查 `handleClickPublish`，发现「下一步」在提交前有**硬校验链**，任一不满足即 `te.A.warning(...)` 后 `return`——而这类提示是 **3 秒自动消失的 toast**，截图晚于 3 秒就什么都看不到。校验顺序：
+
+1. 标题（含空格 / 空 / 超 `ps=25` 字）→ `check_pre` 查重（`check_type=1 && is_hit`）→ 红条常驻；
+2. 正文字数（`Jl=100` ~ `BW=100000`）；签约作品另有 `Jx=5000` 下限；
+3. 推荐标题合法性；
+4. **封面**：`if (!f.uri) { warning("请上传封面"); return }`；
+5. 分类：至少 1 个、必含主分类、≤ 8 个；
+6. **试读比例**：`getExistNodes("payNode").length > 0` 且 `validateThreshold()` 通过、`percentage` 在 `[0.3, 1)`；
+7. **发布协议**：`if (!S) { 高亮 signLicense; return }`；
+8. 审核不通过内容 / 错别字未改；
+9. **是否使用AI**：`if (null == E) { warning("请选择是否使用 AI"); return }`；
+10. 章节格式 / 错别字自检 → 弹「发布提示」（`继续发布` / `取消`）→ `onOk` 进下一步；
+11. 「提交确认」弹窗（`.publish-confirm-container`，含「未上传封面图，系统将自动按照分类匹配」「可试读比例」）→ 点「确定」→ `handlePublish` 真正发布。
+
+**同时推翻两条旧结论**：
+- **「标题腾空 workaround」不必要**：`check_pre` 在本条草稿标题 == 表单标题时仍返回 `check_resp_list: []`（不把草稿自身算重复）。原 `publishShortStory` 里那段「先存空标题再写回」的绕法已删除。
+- **「发布协议不是前置」错误**：它确实是硬门。旧结论源于**点法不对**——复选框 JS click（input / label / mask）全部无效，唯一有效路径是**真实鼠标点协议文字** `.publish-short-config-checkdesc` → 弹「短故事发布事项」→ 点「我已阅读并同意」。旧代码在「下一步」**之后**等这个弹窗，位置也错了（应在「下一步」之前就勾上）。
+
+**另一个隐蔽坑**：封面抽屉（`.ai-story-cover`）关掉后**残留一层遮罩**，会吃掉后续所有**真实鼠标点击**；`element.click()` 不受影响。所以链路顺序被固定为：**发布协议（真实点击）→ 是否使用AI → 试读比例 → 封面 → 存草稿 → 下一步（JS click）→「继续发布」→「提交确认」（JS click 确定）**。踩过的坑：封面抽屉的 tab 不是 `.arco-tabs-tab`，而是 `div[role="tab"].arco-tabs-header-title`；上传后要点「确认上传」（有时还有一层「确定」）。
+
+**代码改动**（`src/services/short.ts` + `src/tools/shortStory.ts`）
+- 新增 `SHORT_PUBLISH_SELECTORS`（封面 / 封面已设置 / 抽屉 tab / 试读「去设置」/ AI 单选 / 协议文字），把上述逆向结论写成注释钉在选择器旁边。
+- 重写 `uploadCover`：开抽屉 → 切「本地上传」→ 勾图片上传协议 → 塞文件 → 「确认上传」→（「确定」）→ 校验已设置；重试 3 次。
+- 新增 `acceptPublishTerms`（真实点击 + 弹窗同意 + 回读 `checked`）、`ensurePayNode`（点「去设置」落 30% 试读线）、`readPublishGates`（四门自检）、`clickConfirmModalOk`、`jsClickButton`（避遮罩）、`waitFor`、`readToasts`。
+- `readShortInPage` 扩展返回 `publishStatus / displayStatus / bookThumbUri`，发布成功以 `publish_status === 1` 复核（原先靠「有没有出现发布按钮」猜）。
+- `publishShortStory` 的 `confirm=true` 路径重写：**`use_ai` 缺省直接拒绝**（合规声明不替用户猜）；四门补齐 → 自检 → 「下一步」→ 抓 toast（过滤掉常驻的审核工作时间提示）→「继续发布」→「提交确认」→ 复核；失败一律给出「缺了哪一项」。
+- 删除死代码 `acceptShortTerms` / `clickPublish`；`chooseUseAI` 改用实测容器 `[class*="publish_short_config_use_ai"]` 并回读是否选中。
+
+**真机首发结果**（本轮实际发布）：item_id `7697662166328951320`，《青石巷的第三十八步》11638 字，分类 悬疑惊悚(1385)/推理(61)/职场(127)，封面 `book_thumb_uri=novel-pic-r/6c671292835878e5076281feb5aa821a`（600×800 竖版自制封面），`use_ai=是`，试读 30%，勾了发布协议 → 页面出现「返回短故事管理 / 再写一篇」，`edit/v1` 的 `publish_status=1`、`list_short_stories_tomato(status="all")` 可见该条。**注意**：提交时约 01:00，落在审核非工作时间，作品会卡在「审核中」直至次日早上 7–9 点。
+
+**验证**：`npm run build` 0 错；`npm run smoke` 全绿（28 工具 / 8 资源）；发布工具 `confirm=false` 预览路径真机回归通过。

@@ -85,6 +85,7 @@ export function registerShortStoryTools(server) {
         description: "改「已存在」短故事的标题 / 正文 / 分类 / 封面 / 是否使用AI（打开 /publish-short/{item_id} 编辑页）。" +
             "正文可用 content/file_path/article_id；**只覆盖显式传入的字段**，未传的保持线上原值。" +
             "confirm=true 只点「存草稿」（**不会发布**，且至少要给一个要改的字段）；默认 confirm=false 只打开编辑页读现状 + 截图，**完全不填充**（可只传 item_id 探现状）。" +
+            "封面走「封面设置 →（抽屉）本地上传」；use_ai 是发布时的必填项，这里可先存好。" +
             "⚠️ 已发布的短故事可能不允许再次修改（以页面/后台为准）；要发布请用 publish_short_story_tomato。",
         inputSchema: {
             item_id: z.string().describe("要修改的短故事 item_id"),
@@ -130,8 +131,11 @@ export function registerShortStoryTools(server) {
     server.registerTool("publish_short_story_tomato", {
         title: "发布短故事",
         description: `发布短故事。可给 item_id 直接发布已有作品，或给 title(+content) 新建并发布。` +
-            `confirm=false 只填表预览；confirm=true 才走 存草稿 → 下一步 → 发布。` +
-            `若命中实名/人脸验证会停止并提示人工完成。字数需在 ${SHORT_MIN_WORDS}–${SHORT_MAX_WORDS}。`,
+            `confirm=false 只填表预览；confirm=true 才走 补齐必填项 → 存草稿 → 下一步 →（发布提示）→ 提交确认 → 发布。` +
+            `⚠️ 平台强制三个必填项（缺一个「下一步」只会弹 3 秒即消失的 toast）：` +
+            `① 封面（传 cover_path，或该草稿/作品已有封面）；② use_ai=true|false（发布必须显式声明，工具不替你猜）；` +
+            `③ 发布协议（自动勾）+ 试读比例（自动点「去设置」落一条 30% 试读线）。` +
+            `发布后按 edit/v1 的 publish_status=1 复核。若命中实名/人脸验证会停止并提示人工完成。字数需在 ${SHORT_MIN_WORDS}–${SHORT_MAX_WORDS}。`,
         inputSchema: {
             item_id: z.string().optional().describe("要发布的短故事 item_id（与 title 二选一）"),
             title: z.string().optional().describe("短故事名称（配合 content 新建并发布）"),
@@ -139,10 +143,13 @@ export function registerShortStoryTools(server) {
             file_path: z.string().optional(),
             article_id: z.string().optional(),
             categories: categoryShape,
-            cover_path: z.string().optional(),
+            cover_path: z.string().optional().describe("本地封面图片路径（发布必填项的来源之一；不给＝沿用该草稿已有封面）"),
             sign_type: z.number().int().optional().describe("签约类型（一般不用改）"),
             divided_chapters: z.boolean().optional().describe("是否使用分章"),
-            use_ai: z.boolean().optional(),
+            use_ai: z
+                .boolean()
+                .optional()
+                .describe("是否使用AI（**confirm=true 发布时必填**：平台强制声明，不给会被本工具直接拒绝）"),
             confirm: z.boolean().optional().describe("是否真正发布，默认 false"),
             headless: z.boolean().optional().describe("是否无头运行，默认 true"),
         },
@@ -186,10 +193,11 @@ export function registerShortStoryTools(server) {
     });
     server.registerTool("set_short_story_cover_tomato", {
         title: "设置短故事封面",
-        description: "为已有短故事上传本地封面图片（通过编辑页文件上传入口，由页面自身完成 cover/v0 签名）。默认 confirm=false 只上传不保存。",
+        description: "为已有短故事上传本地封面图片：走编辑页「封面设置 →（抽屉）本地上传」→ 勾图片上传协议 → 确认上传，" +
+            "由页面自身完成 cover/v0 签名。平台建议 600×800、jpg/png、≤5MB。默认 confirm=false 只上传不保存（不落库）。",
         inputSchema: {
             item_id: z.string().describe("短故事 item_id"),
-            cover_path: z.string().describe("本地封面图片路径"),
+            cover_path: z.string().describe("本地封面图片路径（建议 600x800 竖图 jpg/png，≤5MB）"),
             confirm: z.boolean().optional().describe("是否保存草稿以持久化封面，默认 false"),
             headless: z.boolean().optional(),
         },
