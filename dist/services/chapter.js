@@ -581,22 +581,25 @@ export async function uploadChapter(opts) {
         }
         // 改稿：按 chapterId 复核（不能按标题匹配 —— 改名后列表里可能还残留旧标题）
         if (opts.chapterId) {
-            const finalUrl = page.url();
-            let afterCh = await fetchChapterById(page, opts.bookId, opts.chapterId);
             const match = (t) => !!t && (cleanChapterTitle(t) === plainTitle || t.trim() === plainTitle);
-            if (!match(afterCh?.title)) {
-                await sleep(4000);
+            let afterCh = await fetchChapterById(page, opts.bookId, opts.chapterId);
+            // 提交后先进「修改审核」，列表标题会滞后（实测约 1–2 分钟）→ 轮询一会儿
+            for (let i = 0; i < 6 && !match(afterCh?.title); i++) {
+                await sleep(5000);
                 afterCh = (await fetchChapterById(page, opts.bookId, opts.chapterId)) ?? afterCh;
             }
-            const okTitle = match(afterCh?.title);
-            const file = await shot(page, okTitle ? "chapter-updated" : "chapter-update-result").catch(() => "");
+            const titleOk = match(afterCh?.title);
+            const ok = titleOk || submitted;
+            const file = await shot(page, titleOk ? "chapter-updated" : "chapter-update-result").catch(() => "");
             return {
-                ok: okTitle,
-                action: okTitle ? "updated" : "error",
-                message: okTitle
-                    ? `章节 ${opts.chapterId} 已修改：标题「${afterCh.title}」，正文 ${afterCh.wordNumber} 字。改动可能需要重新审核。`
-                    : `已走完修改流程，但章节列表读回的是「${afterCh?.title ?? "（读不到）"}」，与目标标题「${plainTitle}」不一致。请到作者后台确认（可能仍在审核或保存失败）。`,
-                url: finalUrl,
+                ok,
+                action: ok ? "updated" : "error",
+                message: titleOk
+                    ? `章节 ${opts.chapterId} 已修改为「${plainTitle}」（线上标题「${afterCh.title}」，正文 ${afterCh.wordNumber} 字）。改动可能需要重新审核。`
+                    : submitted
+                        ? `已提交修改（后台按「修改审核」处理），列表暂仍读回「${afterCh?.title ?? "（读不到）"}」；标题将在审核通过后生效，请稍后复核。`
+                        : `未检测到提交流程（可能未找到「下一步/提交」按钮），列表读回「${afterCh?.title ?? "（读不到）"}」。请到作者后台确认。`,
+                url,
                 screenshotPath: file,
             };
         }
