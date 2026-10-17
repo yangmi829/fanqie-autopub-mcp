@@ -1,6 +1,6 @@
 import { sleep, shot } from "../browser/driver.js";
 import { automationReadiness } from "./auth.js";
-import { openSession, isError, apiGet, API, chapterUrlTemplate } from "../browser/endpoints.js";
+import { openSession, isError, apiGet, API, chapterUrlTemplate, modifyChapterPath, authorApiBase } from "../browser/endpoints.js";
 import { toPlainText, cleanChapterTitle } from "../core/text.js";
 import { logger } from "../core/logger.js";
 export async function listChapters(bookId, pageCount = 200) {
@@ -403,6 +403,27 @@ async function fetchChapterStats(page, bookId, title) {
         .catch(() => ({ count: -1, found: false }));
 }
 /**
+ * 按 chapterId 复核章节当前标题/字数（改稿后判断是否真的生效；不能用标题匹配，改名时旧标题也在列表里）。
+ */
+async function fetchChapterById(page, bookId, chapterId) {
+    return page
+        .evaluate(async (p) => {
+        try {
+            const r = await fetch(`https://fanqienovel.com/api/author/chapter/chapter_list/v1?aid=2503&app_name=muye_novel&book_id=${p.bookId}&page_count=200&page_index=0`, { credentials: "include" });
+            const j = await r.json();
+            const items = j?.data?.item_list ?? [];
+            const hit = items.find((c) => String(c?.item_id ?? c?.chapter_id ?? "") === p.chapterId);
+            return hit
+                ? { title: String(hit.title ?? ""), wordNumber: Number(hit.word_number ?? hit.word_count ?? 0) }
+                : null;
+        }
+        catch {
+            return null;
+        }
+    }, { bookId, chapterId })
+        .catch(() => null);
+}
+/**
  * 真实上传章节。流程（逆向 + 实测）：
  *  Step1 进 /publish/ 自动建草稿；填序号/标题/ProseMirror 正文
  *  Step2 关「设置分卷」引导 → 下一步
@@ -420,11 +441,15 @@ export async function uploadChapter(opts) {
     if (!opts.bookId) {
         return { ok: false, action: "aborted", message: "缺少番茄书 ID（book_id）。" };
     }
-    const session = await openSession(opts.headless ?? false, chapterUrlTemplate().replace("{bookId}", opts.bookId));
+    // 新建章节走 /publish/?enter_from=newchapter_1；改已发布章节走 /publish/{chapterId}/?enter_from=modifychapter
+    const path = opts.chapterId
+        ? modifyChapterPath(opts.bookId, opts.chapterId)
+        : chapterUrlTemplate().replace("{bookId}", opts.bookId);
+    const session = await openSession(opts.headless ?? false, path);
     if (isError(session))
         return { ok: false, action: "aborted", message: session.error };
     const { browser, page } = session;
-    const url = chapterUrlTemplate().replace("{bookId}", opts.bookId);
+    const url = `${authorApiBase()}${path}`;
     try {
         const { num: numSel, title: titleSel, content: contentSel } = await waitForEditor(page);
         if (!numSel || !titleSel || !contentSel) {
@@ -438,30 +463,63 @@ export async function uploadChapter(opts) {
                 screenshotPath: file,
             };
         }
+        // 改章节的「只读预览」：编辑器会边输入边自动保存 → 预览阶段一律不填充，避免误改线上
+        if (opts.chapterId && !opts.confirm) {
+            const cur = await page
+                .evaluate((s) => {
+                const pick = (sel) => document.querySelector(sel);
+                const n = pick(s.num);
+                const t = pick(s.title);
+                const c = pick(s.content);
+                return {
+                    chapterNumber: n ? String(n.value ?? "").trim() : "",
+                    title: t ? String(t.value ?? "").trim() : "",
+                    contentLength: c ? String(c.innerText ?? "").replace(/\s/g, "").length : 0,
+                };
+            }, { num: numSel, title: titleSel, content: contentSel })
+                .catch(() => null);
+            const file = await shot(page, "chapter-modify-preview").catch(() => "");
+            const previewLen = toPlainText(opts.content || "").replace(/\s/g, "").length;
+            return {
+                ok: true,
+                action: "filled-not-submitted",
+                message: `已打开章节 ${opts.chapterId} 的修改页（enter_from=modifychapter）。当前线上：序号「${cur?.chapterNumber ?? "?"}」标题「${cur?.title ?? "?"}」，正文 ${cur?.contentLength ?? 0} 字。` +
+                    `confirm=false 下**没有做任何填充**（该编辑器边输入边自动保存，预览阶段填充有改动线上的风险）。` +
+                    `确认后传 confirm=true：标题 →「${cleanChapterTitle(opts.title || "")}」，${previewLen > 0 ? `正文一并替换为 ${previewLen} 字` : "正文保持不变（只改标题）"}，并走完后续流程。`,
+                url: page.url(),
+                screenshotPath: file,
+            };
+        }
         const num = String(opts.chapterNumber ?? "").trim();
+        // 番茄的「序号框」与「标题框」是两个独立输入：标题框里不含「第X章」，所以统一剥前缀
         const plainTitle = cleanChapterTitle(opts.title || "");
         const plainContent = toPlainText(opts.content || "");
         const expectLen = plainContent.replace(/\s/g, "").length;
+        // 改稿时不传正文 = 保留线上正文（编辑器里已载入），只改标题
+        const keepBody = !!opts.chapterId && expectLen === 0;
         // 正文走 ProseMirror 的 execCommand，偶发填充不完整 → 校验字数并重试
         let editorLen = 0;
         for (let attempt = 0; attempt < 4; attempt++) {
             if (num)
                 await fillField(page, numSel, num);
             await fillField(page, titleSel, plainTitle);
-            await fillField(page, contentSel, plainContent);
+            if (!keepBody)
+                await fillField(page, contentSel, plainContent);
             await sleep(1000);
             editorLen = await readEditorLength(page, contentSel);
-            if (editorLen >= expectLen * 0.8)
+            if (keepBody ? editorLen > 0 : editorLen >= expectLen * 0.8)
                 break;
             logger.warn(`正文填充不完整（${editorLen}/${expectLen}），第 ${attempt + 1} 次重试`);
             await sleep(800);
         }
-        if (editorLen < expectLen * 0.8) {
+        if (keepBody ? editorLen === 0 : editorLen < expectLen * 0.8) {
             const file = await shot(page, "chapter-content-too-short");
             return {
                 ok: false,
                 action: "aborted",
-                message: `正文填充不完整（编辑器中 ${editorLen} 字 / 应为 ${expectLen} 字），已中止，避免发布空章。`,
+                message: keepBody
+                    ? "改稿页读不到线上正文（编辑器字数 0），为避免把正文改空，已中止。请显式传 content/article_id。"
+                    : `正文填充不完整（编辑器中 ${editorLen} 字 / 应为 ${expectLen} 字），已中止，避免发布空章。`,
                 url: page.url(),
                 screenshotPath: file,
             };
@@ -520,6 +578,27 @@ export async function uploadChapter(opts) {
         if (!submitted) {
             await shot(page, "chapter-submit-missing").catch(() => "");
             logger.warn("未检测到「提交」确认弹窗，仍尝试复核发布结果");
+        }
+        // 改稿：按 chapterId 复核（不能按标题匹配 —— 改名后列表里可能还残留旧标题）
+        if (opts.chapterId) {
+            const finalUrl = page.url();
+            let afterCh = await fetchChapterById(page, opts.bookId, opts.chapterId);
+            const match = (t) => !!t && (cleanChapterTitle(t) === plainTitle || t.trim() === plainTitle);
+            if (!match(afterCh?.title)) {
+                await sleep(4000);
+                afterCh = (await fetchChapterById(page, opts.bookId, opts.chapterId)) ?? afterCh;
+            }
+            const okTitle = match(afterCh?.title);
+            const file = await shot(page, okTitle ? "chapter-updated" : "chapter-update-result").catch(() => "");
+            return {
+                ok: okTitle,
+                action: okTitle ? "updated" : "error",
+                message: okTitle
+                    ? `章节 ${opts.chapterId} 已修改：标题「${afterCh.title}」，正文 ${afterCh.wordNumber} 字。改动可能需要重新审核。`
+                    : `已走完修改流程，但章节列表读回的是「${afterCh?.title ?? "（读不到）"}」，与目标标题「${plainTitle}」不一致。请到作者后台确认（可能仍在审核或保存失败）。`,
+                url: finalUrl,
+                screenshotPath: file,
+            };
         }
         const finalUrl = page.url();
         let after = await fetchChapterStats(page, opts.bookId, plainTitle);

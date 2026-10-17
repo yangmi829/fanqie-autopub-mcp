@@ -80,6 +80,69 @@ export function registerChapterTools(server: McpServer): void {
   );
 
   server.registerTool(
+    "update_chapter_tomato",
+    {
+      title: "修改已发布章节",
+      description:
+        "改已发布章节的标题 / 正文（走章节列表里的编辑入口 `publish/{chapterId}/?enter_from=modifychapter`，复用发布链路：下一步 → 内容检测方式 → 发布设置 → 确认提交 → 按 chapter_id 复核）。" +
+        "正文可用 content、file_path 或 article_id；**都不给就保留线上正文、只改标题**。" +
+        "⚠️ 改已发布章节通常会触发重新审核、影响曝光；且该编辑器边输入边自动保存，所以**默认 confirm=false 只打开修改页读现状 + 截图，完全不填充**；confirm=true 才填入并提交。" +
+        "复核按 chapter_id 比对标题（不按标题匹配，改名后旧标题也在列表里）。",
+      inputSchema: {
+        book_id: z.string().describe("番茄书 ID（book_id）"),
+        chapter_id: z.string().describe("要修改的章节 ID（从 list_chapters_tomato 的 id 取）"),
+        title: z.string().describe("修改后的章节标题（会剥掉「第X章」前缀，与新建章节一致）"),
+        chapter_number: z.union([z.number(), z.string()]).optional().describe("章节序号（一般不用改，留空则沿用线上）"),
+        content: z.string().optional().describe("修改后的正文（与 file_path/article_id 三选一；都不给＝只改标题）"),
+        file_path: z.string().optional().describe("正文所在文件路径（UTF-8 文本）"),
+        article_id: z.string().optional().describe("本地文稿库 article_id（优先于 file_path/content）"),
+        detection: z.enum(["basic", "full"]).optional().describe("内容检测方式：basic=仅基础检测，full=全面检测（默认 basic）"),
+        use_ai: z.boolean().optional().describe("发布设置的「是否使用AI」，默认 false"),
+        confirm: z.boolean().optional().describe("是否真正提交修改，默认 false（只读预览）"),
+        headless: z.boolean().optional().describe("是否无头运行，默认 false（便于人工核对）"),
+      },
+    },
+    async (args) => {
+      if (!String(args.title ?? "").trim()) return fail("缺少 title：改章节必须给出修改后的标题。");
+
+      let content = args.content ?? "";
+      if (args.article_id) {
+        const art = await articles.get(args.article_id);
+        if (!art) return fail(`本地文稿库未找到 article_id=${args.article_id}`);
+        content = art.content;
+      } else if (!content && args.file_path) {
+        try {
+          content = resolveContent(undefined, args.file_path).text;
+        } catch (e) {
+          return fail((e as Error).message);
+        }
+      }
+      // content 为空 = 保留线上正文、只改标题（uploadChapter 里按 keepBody 处理）
+
+      const r = await uploadChapter({
+        bookId: args.book_id,
+        chapterId: args.chapter_id,
+        title: args.title,
+        content,
+        chapterNumber: args.chapter_number,
+        detection: args.detection,
+        useAI: args.use_ai,
+        confirm: args.confirm,
+        headless: args.headless,
+      });
+
+      if (args.article_id && r.action === "updated") {
+        await articles.update(args.article_id, {
+          tomatoBookId: args.book_id,
+          lastMessage: r.message,
+          updatedAt: nowIso(),
+        });
+      }
+      return fromService(r as any);
+    }
+  );
+
+  server.registerTool(
     "batch_publish_chapters",
     {
       title: "批量上传章节",

@@ -38,6 +38,13 @@ export function chapterUrlTemplate() {
     return (process.env.FANQIE_CHAPTER_URL_TEMPLATE ||
         `${authorApiBase()}/main/writer/{bookId}/publish/?enter_from=newchapter_1`);
 }
+/**
+ * 改「已发布章节」的编辑器地址：与新建章节同一个编辑器，
+ * 靠路径里的 chapterId + `enter_from=modifychapter` 区分（列表页每章的编辑图标指向这里）。
+ */
+export function modifyChapterPath(bookId, chapterId) {
+    return `/main/writer/${bookId}/publish/${chapterId}/?enter_from=modifychapter`;
+}
 /** 番茄后台通用的 aid / app_name 参数（所有 author 接口都带） */
 export const AID = process.env.FANQIE_AID || "2503";
 export const APP_NAME = process.env.FANQIE_APP_NAME || "muye_novel";

@@ -60,7 +60,7 @@ node scripts\mcp-cli.mjs --res fanqie://publish-rules            # 读资源
 
 ---
 
-## 2. 工具清单（26 个）
+## 2. 工具清单（27 个）
 
 ### 2.1 登录与状态（3）
 
@@ -81,12 +81,13 @@ node scripts\mcp-cli.mjs --res fanqie://publish-rules            # 读资源
 
 > 标签的真实机制（实测）：点标签行 → 弹出独立分类弹窗（标题即「阅读标签」/「内容标签」，选项 `.category-choose-item`，`active`=已选）→ 点选项 → 点弹窗「确认」才落到**表单**。弹窗「确认」**不等于**提交作品信息，最后仍需表单底部的「立即修改」；已验证点完弹窗「确认」但不点「立即修改」时，线上标签原样不变。
 
-### 2.3 新增小说章节（3，含批量）
+### 2.3 小说章节（4，含批量）
 
 | 工具 | 说明 |
 |---|---|
 | `list_chapters_tomato` | 读某本书的章节列表，用于复核与避重 |
 | `add_chapter_tomato` | 序号+标题+正文 → 下一步 → 内容检测方式 → 发布设置(是否使用AI) → 确认提交 → 错别字二次确认 → 接口复核；支持 `scheduled_time` 定时发布 |
+| `update_chapter_tomato` | **改已发布章节**：走章节列表的编辑入口 `publish/{chapterId}/?enter_from=modifychapter`，复用上面同一条发布链路，最后按 `chapter_id` 复核标题。正文可用 `content`/`file_path`/`article_id`；**都不给＝保留线上正文、只改标题**。⚠️ 该编辑器边输入边自动保存，所以 `confirm=false` 时**只打开修改页读现状 + 截图，完全不填充**（避免误改线上）；`confirm=true` 才填入并提交 |
 | `batch_publish_chapters` | 从本地文稿库挑「待发布」章节，按序限速依次上传；单章失败不中断 |
 
 ### 2.4 短故事（6）

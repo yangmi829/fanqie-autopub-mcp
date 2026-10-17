@@ -348,9 +348,12 @@ create_short_story_tomato(confirm=false) → 校验字数(6000–80000) → 预�
 - 新增 `update_novel_info_tomato`：改书名(≤15)/主角名1、2(≤5)/简介(50–500)/阅读标签/内容标签；`set_book_tags` 改为它的薄包装（只传标签）。
 - 客户端前置校验：书名、主角名、简介字数；内容标签上限 plot≤4 / emotion≤2 / character≤4 / worldview≤1；至少给一个要改的字段。
 - 预览路径返回 `filled` / `appliedReading` / `appliedContent` / `alreadySelected` / `selectedReading` / `selectedContent`，并截图。
+- 新增 `update_chapter_tomato`（改已发布章节）：路由 `publish/{chapterId}/?enter_from=modifychapter`，复用 `chapter.ts` 的发布链路（下一步 → 内容检测方式 → 发布设置 → 确认提交）。两个设计取舍：
+  - **预览不填充**：该编辑器边输入边自动保存，`confirm=false` 只打开修改页读现状（序号/标题/正文字数）+ 截图，避免「预览」把线上正文改了；
+  - **`content` 可省**：不传正文＝保留线上正文、只改标题（`keepBody`）；复核按 `chapter_id` 取行再比对标题（不能用标题全表匹配 —— 改名后旧标题也在列表里），且比较前统一剥掉「第X章」前缀（序号框与标题框是两个独立输入）。
 
-**验证**：`npm run build` 0 错；`npm run smoke` 全绿（26 工具 / 8 资源，含 `update_novel` 与 `import_articles_from_dir` 的本地夹具断言）；真机 `confirm=false` 预览：填表 + **加一个当前未选的新标签（悬疑）** + 回读表单行 = `[都市脑洞,悬疑,单女主,扮猪吃虎,打脸,系统]`；再重开页面只读回读线上标签 = `[都市脑洞,单女主,扮猪吃虎,打脸,系统]`（没有悬疑）→ 证明**点完弹窗「确认」但不点「立即修改」不会写线上**。
+**验证**：`npm run build` 0 错；`npm run smoke` 全绿（27 工具 / 8 资源，含 `update_novel` 与 `import_articles_from_dir` 的本地夹具断言）；真机 `confirm=false` 预览：填表 + **加一个当前未选的新标签（悬疑）** + 回读表单行 = `[都市脑洞,悬疑,单女主,扮猪吃虎,打脸,系统]`；再重开页面只读回读线上标签 = `[都市脑洞,单女主,扮猪吃虎,打脸,系统]`（没有悬疑）→ 证明**点完弹窗「确认」但不点「立即修改」不会写线上**。改章节侧：只读预览成功打开 `.../publish/7697636279080469016/?enter_from=modifychapter`，读到线上标题「科目由你定」、正文 3955 字（未填充、未提交）。
 
-**工具数** 23 → 26（`+update_novel`、`+import_articles_from_dir`、`+update_novel_info_tomato`）。
+**工具数** 23 → 27（`+update_novel`、`+import_articles_from_dir`、`+update_novel_info_tomato`、`+update_chapter_tomato`）。
 
-**尚未做**：`update_chapter_tomato`（改已发布章节，复用 `chapter.ts` 发布链路 + `enter_from=modifychapter` 路由）。
+**仍未做（有意）**：标签的「替换 / 删除」语义（当前只做「确保选中」，要删标签得手工去后台）；`get_novel`（读设定走资源 `fanqie://novels`）。
