@@ -172,8 +172,10 @@ scripts/
 ├── smoke.mjs             # 协议级冒烟（不触网）
 └── mcp-cli.mjs           # 命令行直连 MCP
 data/                     # cookies / articles.json / novels.json / ... / screenshots
-dist/                     # WorkBuddy 实际加载入口
+dist/                     # WorkBuddy 实际加载入口（已入库，clone 后可免 build 直接运行）
 ```
+
+> `dist/` 已特意入库以支持开箱即用；**修改 `src/` 后请 `npm run build`，并把新的 `dist/` 一并提交**，否则运行的是旧产物。
 
 ## 8. 故障排查
 

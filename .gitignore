@@ -1,6 +1,8 @@
-# 依赖与构建产物
+# 依赖
 node_modules/
-dist/
+
+# 构建产物：dist/ 特意入库，便于 clone 后开箱即用（免 build）
+# dist/
 
 # 本地数据（cookies / 文稿 / 截图 / 任务）
 # ⚠️ data/ 下有有效的登录 cookies，绝不能提交
