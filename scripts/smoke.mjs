@@ -53,6 +53,7 @@ const EXPECTED_TOOLS = [
   "list_novels_tomato",
   "create_novel_tomato",
   "update_novel",
+  "update_novel_info_tomato",
   // 章节
   "list_chapters_tomato",
   "add_chapter_tomato",
@@ -123,7 +124,7 @@ try {
   // 1) 工具清单
   const tools = await client.listTools();
   const names = tools.tools.map((t) => t.name);
-  check("工具总数=25", names.length === 25, `实际=${names.length}`);
+  check("工具总数=26", names.length === 26, `实际=${names.length}`);
   for (const t of EXPECTED_TOOLS) check(`工具存在: ${t}`, names.includes(t));
 
   // 2) 资源清单

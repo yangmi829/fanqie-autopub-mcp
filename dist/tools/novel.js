@@ -1,9 +1,38 @@
 import { z } from "zod";
 import { ok, fail, fromService } from "../core/result.js";
-import { listBooks, createBook, setBookTags, validateContentTagCaps, CONTENT_TAG_CAPS } from "../services/novel.js";
+import { listBooks, createBook, setBookTags, updateBookInfo, validateContentTagCaps, CONTENT_TAG_CAPS } from "../services/novel.js";
 import { updateNovel } from "../services/localNovel.js";
 import { novels, newId, nowIso } from "../core/store.js";
 const tagShape = z.array(z.string()).optional();
+/** 番茄作品信息的字段限制（与前端 maxlength / 计数一致） */
+const BOOK_INFO_LIMITS = { title: 15, protagonist: 5, abstractMin: 50, abstractMax: 500 };
+/** 非空字符数（去掉空白，中文按字计） */
+function charCount(s) {
+    return [...s.replace(/\s/g, "")].length;
+}
+/** 提交前校验作品信息字段；返回错误文案或 null */
+function validateBookInfoFields(args) {
+    if (args.title !== undefined && charCount(args.title) > BOOK_INFO_LIMITS.title)
+        return `书名不能超过 ${BOOK_INFO_LIMITS.title} 字（当前 ${charCount(args.title)}）。`;
+    for (const [label, v] of [
+        ["主角名1", args.protagonist1],
+        ["主角名2", args.protagonist2],
+    ]) {
+        if (v !== undefined && charCount(v) > BOOK_INFO_LIMITS.protagonist)
+            return `${label}不能超过 ${BOOK_INFO_LIMITS.protagonist} 字（当前 ${charCount(v)}）。`;
+    }
+    if (args.abstract !== undefined) {
+        const n = charCount(args.abstract);
+        if (n < BOOK_INFO_LIMITS.abstractMin || n > BOOK_INFO_LIMITS.abstractMax)
+            return `作品简介需 ${BOOK_INFO_LIMITS.abstractMin}–${BOOK_INFO_LIMITS.abstractMax} 字（当前 ${n}）。`;
+    }
+    const hasTag = (args.reading_tags?.length ?? 0) > 0 ||
+        Object.values(args.content_tags ?? {}).some((v) => (v?.length ?? 0) > 0);
+    const hasField = [args.title, args.protagonist1, args.protagonist2, args.abstract].some((v) => v !== undefined && v.trim() !== "");
+    if (!hasField && !hasTag)
+        return "至少要提供一个要修改的字段（书名/主角名/简介/标签）。";
+    return null;
+}
 export function registerNovelTools(server) {
     server.registerTool("list_novels_tomato", {
         title: "列出番茄小说",
@@ -98,12 +127,13 @@ export function registerNovelTools(server) {
     });
     server.registerTool("set_book_tags", {
         title: "设置作品标签（阅读 / 内容）",
-        description: `为已存在的番茄书设置「阅读标签」与「内容标签」。先查作品是否处于审核锁（can_modify），被锁则直接告知原因不修改。` +
+        description: `为已存在的番茄书设置「阅读标签」与「内容标签」（走「作品信息 → 修改」弹窗）。先查作品是否处于审核锁（can_modify），被锁则直接告知原因不修改。` +
+            `语义是「确保这些标签处于选中」：已经选中的会跳过（不会误取消）。` +
             `内容标签上限：情节≤${CONTENT_TAG_CAPS.plot}/情感≤${CONTENT_TAG_CAPS.emotion}/人设≤${CONTENT_TAG_CAPS.character}/世界观≤${CONTENT_TAG_CAPS.worldview}。` +
-            `默认 confirm=false 只查锁 + 预览；confirm=true 才打开编辑页勾选并保存。`,
+            `默认 confirm=false 只打开弹窗填表 + 截图（不提交）；confirm=true 才点「立即修改」。`,
         inputSchema: {
             book_id: z.string().describe("番茄书 ID"),
-            reading_tags: tagShape.describe("阅读标签"),
+            reading_tags: tagShape.describe("阅读标签（要处于选中状态的标签）"),
             content_tags: z
                 .object({
                 plot: tagShape.describe("情节标签"),
@@ -113,7 +143,7 @@ export function registerNovelTools(server) {
             })
                 .optional()
                 .describe("内容标签（4 组，各有上限）"),
-            confirm: z.boolean().optional().describe("是否真正打开编辑页勾选并保存，默认 false"),
+            confirm: z.boolean().optional().describe("是否真正提交，默认 false（只填表 + 截图）"),
             headless: z.boolean().optional().describe("是否无头运行，默认 true"),
         },
     }, async (args) => {
@@ -122,6 +152,58 @@ export function registerNovelTools(server) {
             return fail(`内容标签超出上限：${over.join("；")}`);
         const r = await setBookTags({
             bookId: args.book_id,
+            readingTags: args.reading_tags,
+            contentTags: args.content_tags,
+            confirm: args.confirm,
+            headless: args.headless,
+        });
+        if (r.action === "preview" || r.action === "locked")
+            return ok(r);
+        return fromService(r);
+    });
+    server.registerTool("update_novel_info_tomato", {
+        title: "修改已有作品信息（书名 / 主角名 / 简介 / 标签）",
+        description: `改「已发布」番茄书的作品信息：书名(≤${BOOK_INFO_LIMITS.title}字)、主角名1/2(各≤${BOOK_INFO_LIMITS.protagonist}字)、` +
+            `作品简介(${BOOK_INFO_LIMITS.abstractMin}–${BOOK_INFO_LIMITS.abstractMax}字)、阅读标签、内容标签。` +
+            `走作品信息页(type=1) → 「修改」→「修改作品信息」弹窗；受作品信息审核锁保护，被锁直接返回 locked。` +
+            `标签语义是「确保选中」：已选中的会跳过，不会误取消。只覆盖显式传入的字段。` +
+            `默认 confirm=false 只打开弹窗填表 + 截图（不提交）；confirm=true 才点「立即修改」。` +
+            `⚠️ 改书名/简介可能触发重新审核、影响曝光，请谨慎。`,
+        inputSchema: {
+            book_id: z.string().describe("番茄书 ID"),
+            title: z.string().optional().describe(`书名（≤${BOOK_INFO_LIMITS.title} 字）`),
+            protagonist1: z.string().optional().describe(`主角名1（≤${BOOK_INFO_LIMITS.protagonist} 字）`),
+            protagonist2: z.string().optional().describe(`主角名2（≤${BOOK_INFO_LIMITS.protagonist} 字）`),
+            abstract: z
+                .string()
+                .optional()
+                .describe(`作品简介（${BOOK_INFO_LIMITS.abstractMin}–${BOOK_INFO_LIMITS.abstractMax} 字）`),
+            reading_tags: tagShape.describe("阅读标签（要处于选中状态）"),
+            content_tags: z
+                .object({
+                plot: tagShape.describe("情节标签"),
+                emotion: tagShape.describe("情感标签"),
+                character: tagShape.describe("人设标签"),
+                worldview: tagShape.describe("世界观标签"),
+            })
+                .optional()
+                .describe("内容标签（4 组，各有上限）"),
+            confirm: z.boolean().optional().describe("是否真正提交，默认 false（只填表 + 截图）"),
+            headless: z.boolean().optional().describe("是否无头运行，默认 true"),
+        },
+    }, async (args) => {
+        const over = args.content_tags ? validateContentTagCaps(args.content_tags) : [];
+        if (over.length)
+            return fail(`内容标签超出上限：${over.join("；")}`);
+        const invalid = validateBookInfoFields(args);
+        if (invalid)
+            return fail(invalid);
+        const r = await updateBookInfo({
+            bookId: args.book_id,
+            title: args.title,
+            protagonist1: args.protagonist1,
+            protagonist2: args.protagonist2,
+            abstract: args.abstract,
             readingTags: args.reading_tags,
             contentTags: args.content_tags,
             confirm: args.confirm,

@@ -60,7 +60,7 @@ node scripts\mcp-cli.mjs --res fanqie://publish-rules            # 读资源
 
 ---
 
-## 2. 工具清单（23 个）
+## 2. 工具清单（26 个）
 
 ### 2.1 登录与状态（3）
 
@@ -70,13 +70,16 @@ node scripts\mcp-cli.mjs --res fanqie://publish-rules            # 读资源
 | `set_tomato_cookies` | 手动导入 cookies（文本或文件路径） |
 | `get_publish_status` | 环境自检：cookies / 浏览器驱动 / 后台可达性；`verify_login=true` 时实开浏览器校验登录态 |
 
-### 2.2 新增小说（3）
+### 2.2 小说：新建与修改（4）
 
 | 工具 | 说明 |
 |---|---|
 | `list_novels_tomato` | 读后台真实小说列表；`sync_local=true` 可同步进本地登记（供批量上传用） |
 | `create_novel_tomato` | 驱动 `/main/writer/create` 真实建书 → 返回 `book_id`。必填：书名(≤15字)/频道/主角名1、2(≤5字)/简介(50–500字) |
-| `set_book_tags` | 为已有书设置「阅读标签 / 内容标签」。先查审核锁（`can_modify`），被锁则只告知原因；默认 `confirm=false` 只预览 |
+| `update_novel_info_tomato` | **改已有作品信息**：书名(≤15字)/主角名1、2(≤5字)/简介(50–500字)/阅读标签/内容标签。走「作品信息(type=1) → 修改 → 立即修改」；受作品信息审核锁保护。默认 `confirm=false` 只展开表单并截图 |
+| `set_book_tags` | 只改「阅读标签 / 内容标签」的快捷入口（内部就是 `update_novel_info_tomato` 的薄包装）。**语义是「确保这些标签处于选中」**：已经选中的会跳过，不会误取消 |
+
+> 标签的真实机制（实测）：点标签行 → 弹出独立分类弹窗（标题即「阅读标签」/「内容标签」，选项 `.category-choose-item`，`active`=已选）→ 点选项 → 点弹窗「确认」才落到**表单**。弹窗「确认」**不等于**提交作品信息，最后仍需表单底部的「立即修改」；已验证点完弹窗「确认」但不点「立即修改」时，线上标签原样不变。
 
 ### 2.3 新增小说章节（3，含批量）
 
@@ -97,14 +100,15 @@ node scripts\mcp-cli.mjs --res fanqie://publish-rules            # 读资源
 | `set_short_story_cover_tomato` | 上传本地封面图片 |
 | `delete_short_story_tomato` | 删除短故事/草稿（默认预览；confirm=true 时驱动草稿箱真实 UI 删除） |
 
-### 2.5 本地文稿库（5）
+### 2.5 本地文稿库（6）
 
 | 工具 | 说明 |
 |---|---|
-| `save_article` | 正文入库（`data/articles.json`），返回 `article_id`，避免长文本反复走工具参数 |
+| `save_article` | 正文入库（`data/articles.json`），返回 `article_id`，避免长文本反复走工具参数。带 `article_id` 时为 **upsert**（改稿），只覆盖显式传入的字段 |
 | `list_articles` | 按 kind / novel_id / status 过滤列出 |
 | `get_article` | 取回全文 |
 | `export_article` | 导出成可直接粘贴到后台的文本文件（txt/md），返回绝对路径；适合人工发布 |
+| `import_articles_from_dir` | **从磁盘工作稿目录批量导入**（`章节\第NN章_标题.md`）：自动识别章号/标题、剥掉 `> **本章概要**` 元信息块、跳过合稿文件，按 `novel_id + 章号` upsert（已存在则覆盖正文、保留状态与发布时间）。默认 `confirm=false` 只预览清单 |
 | `delete_article` | 删除本地文稿（默认预览） |
 
 ### 2.6 知识库 / 质检（2）
@@ -119,6 +123,12 @@ node scripts\mcp-cli.mjs --res fanqie://publish-rules            # 读资源
 | 工具 | 说明 |
 |---|---|
 | `get_stats` | 本地文稿/任务/登记汇总 + 环境自检；`remote=true` 时再读一次后台真实数据 |
+
+### 2.8 本地小说设定（1）
+
+| 工具 | 说明 |
+|---|---|
+| `update_novel` | 改**本地** `data/novels.json` 里的作品设定：书名/赛道(`genre`)/简介/大纲/世界观/黄金钩子/角色/目标单章字数/状态。长文本（简介、大纲、世界观、黄金钩子）可改传 `*_file` 给文件路径。纯本地、不碰浏览器，只覆盖显式传入的字段 |
 
 ---
 

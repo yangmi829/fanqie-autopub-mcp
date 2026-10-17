@@ -325,3 +325,32 @@ create_short_story_tomato(confirm=false) → 校验字数(6000–80000) → 预�
 **有意不移植**：`mark_published`（真实发布无需人工回标）；旧 `create_novel/get_novel/update_novel` 的本地设定读写（设定字段已并入 `Novel`，经资源 `fanqie://novels` 读取）。
 
 **验证**：`npm run build` 0 错；`npm run smoke` 全绿（23 工具 / 8 资源 / 本地调用）；真实后端只读校验 `set_book_tags(confirm=false)` → `can_modify=true`；`check_originality` 在迁移语料上 → `compared_with=10`。
+
+---
+
+## 11. 修改能力补充（2026-10-17）
+
+目标：补齐「改」的能力 —— 本地文稿可改、本地小说设定可改、已发布作品信息可改；顺带修 `set_book_tags` 的路由 bug。分档落地，写操作一律沿用两段式（`confirm=false` 只填表/截图，`confirm=true` 才提交）。
+
+**P0 本地侧（纯本地，零风险）**
+- `save_article` 加可选 `article_id` → **upsert 改稿**（`title`/`kind` 变可选，只覆盖显式传入字段）。
+- 新增 `update_novel`（`services/localNovel.ts`）：改 `data/novels.json` 的作品设定，只覆盖显式传入字段。
+- 新增 `import_articles_from_dir`（`services/library.ts`）：从磁盘工作稿目录批量导入。识别 `第NN章_标题.md` 的章号与标题、剥掉 `> **本章概要**` 元信息块、跳过「合稿」文件；按 `novel_id + 章号` upsert，已存在则**只覆盖正文**、保留状态与发布时间。默认 `confirm=false` 只返回待新建/待更新清单。
+- `core/paths.ts` 新增 `resolveLoosePath`：相对路径按「项目根 → 工作区根」解析；**禁止 `process.cwd()`**。
+
+**P1 修 `set_book_tags` 路由 bug**
+- 旧实现用的 `/main/writer/{bookId}/edit` 根本不存在（是猜的）。真实入口是 `book-info/{bookId}?type=1` + 点 `button.create-btn`（文字「修改」）→ 展开的是**页面内联表单**（底部才有「立即修改」）。
+- 标签选择是**二级弹窗**：点标签行（`#selectRow` 阅读 / `#activitySelectRow` 内容）弹出独立 `.arco-modal.category-modal`（标题即「阅读标签」/「内容标签」，选项 `.category-choose-item`，`active`=已选，按钮「取消/确认」）。
+- 实测三个坑：① 弹窗容器一出现就带 `zoomModal-appear` 动画类，**选项延迟渲染**（一开始选项数=0）→ 必须等到选项数 > 0；② DOM 里可能同时有多个 `.arco-modal` → 必须按**弹窗标题**定位；③ 点选项后必须点弹窗「确认」才落到表单，点「取消」丢弃；**Escape / 再点触发器关不掉弹窗**（会被浮层遮挡）。
+- 标签语义统一为「**确保处于选中**」：已选中的跳过（再点会变成取消）。不做替换 / 删除。
+
+**P2 远端改**
+- 新增 `update_novel_info_tomato`：改书名(≤15)/主角名1、2(≤5)/简介(50–500)/阅读标签/内容标签；`set_book_tags` 改为它的薄包装（只传标签）。
+- 客户端前置校验：书名、主角名、简介字数；内容标签上限 plot≤4 / emotion≤2 / character≤4 / worldview≤1；至少给一个要改的字段。
+- 预览路径返回 `filled` / `appliedReading` / `appliedContent` / `alreadySelected` / `selectedReading` / `selectedContent`，并截图。
+
+**验证**：`npm run build` 0 错；`npm run smoke` 全绿（26 工具 / 8 资源，含 `update_novel` 与 `import_articles_from_dir` 的本地夹具断言）；真机 `confirm=false` 预览：填表 + **加一个当前未选的新标签（悬疑）** + 回读表单行 = `[都市脑洞,悬疑,单女主,扮猪吃虎,打脸,系统]`；再重开页面只读回读线上标签 = `[都市脑洞,单女主,扮猪吃虎,打脸,系统]`（没有悬疑）→ 证明**点完弹窗「确认」但不点「立即修改」不会写线上**。
+
+**工具数** 23 → 26（`+update_novel`、`+import_articles_from_dir`、`+update_novel_info_tomato`）。
+
+**尚未做**：`update_chapter_tomato`（改已发布章节，复用 `chapter.ts` 发布链路 + `enter_from=modifychapter` 路由）。
