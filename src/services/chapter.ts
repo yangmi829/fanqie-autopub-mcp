@@ -86,6 +86,29 @@ async function firstMatch(page: any, selectors: string[]): Promise<string | null
   return null;
 }
 
+/**
+ * 等编辑器真正挂载后再取选择器（SPA 在 networkidle2 之后仍可能只显示 loading）。
+ * 轮询到三个输入框都出现即返回，避免「未能定位输入框」的竞态。
+ */
+async function waitForEditor(
+  page: any,
+  timeoutMs = 35000
+): Promise<{ num: string | null; title: string | null; content: string | null }> {
+  const deadline = Date.now() + timeoutMs;
+  let num: string | null = null;
+  let title: string | null = null;
+  let content: string | null = null;
+  while (Date.now() < deadline) {
+    if (!num) num = await firstMatch(page, [".serial-editor-title-left input"]);
+    if (!title)
+      title = await firstMatch(page, ['input[placeholder="请输入标题"]', ".serial-editor-input-hint-area"]);
+    if (!content) content = await firstMatch(page, [".syl-editor-container .ProseMirror", ".ProseMirror"]);
+    if (num && title && content) break;
+    await sleep(500);
+  }
+  return { num, title, content };
+}
+
 /** 填值：INPUT/TEXTAREA 走原生 setter；contenteditable/ProseMirror 走 execCommand */
 async function fillField(page: any, selector: string, text: string): Promise<void> {
   await page.click(selector, { clickCount: 3 }).catch(() => {});
@@ -107,6 +130,11 @@ async function fillField(page: any, selector: string, text: string): Promise<voi
         return;
       }
       el.focus();
+      try {
+        el.click();
+      } catch {
+        /* noop */
+      }
       if (el.classList?.contains("ProseMirror")) {
         document.execCommand("selectAll", false, null);
         document.execCommand("delete", false, null);
@@ -124,6 +152,11 @@ async function fillField(page: any, selector: string, text: string): Promise<voi
           });
           first = false;
         }
+        // 兜底：逐段插入偶发失败（编辑器未聚焦），整体再插一次
+        if (!(el.textContent || "").trim()) {
+          el.focus();
+          document.execCommand("insertText", false, value);
+        }
       } else {
         el.innerText = value;
       }
@@ -132,6 +165,36 @@ async function fillField(page: any, selector: string, text: string): Promise<voi
     selector,
     text
   );
+}
+
+/** 读取编辑器当前正文去空白字符数，用于校验填充是否成功 */
+async function readEditorLength(page: any, selector: string): Promise<number> {
+  return page
+    .evaluate((sel: string) => {
+      const el: any = document.querySelector(sel);
+      if (!el) return -1;
+      return (el.textContent || "").replace(/\s/g, "").length;
+    }, selector)
+    .catch(() => -1);
+}
+
+/** 轮询直到元素存在且可用（未禁用、可见） */
+async function waitForEnabled(page: any, selector: string, timeoutMs = 8000): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const ok = await page
+      .evaluate(
+        (s: string) => {
+          const b: any = document.querySelector(s);
+          return !!b && !b.disabled && b.offsetParent !== null;
+        },
+        selector
+      )
+      .catch(() => false);
+    if (ok) return true;
+    await sleep(500);
+  }
+  return false;
 }
 
 async function trySchedule(page: any, iso: string): Promise<boolean> {
@@ -195,9 +258,9 @@ async function dismissVolumeGuide(page: any): Promise<void> {
 }
 
 /** 「请选择内容检测方式」→ 仅基础检测 / 全面检测 */
-async function chooseDetection(page: any, mode: "basic" | "full"): Promise<boolean> {
+async function chooseDetection(page: any, mode: "basic" | "full", timeoutMs = 20000): Promise<boolean> {
   const label = mode === "full" ? "全面检测" : "仅基础检测";
-  const deadline = Date.now() + 20000;
+  const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const has = await page
       .evaluate(
@@ -229,8 +292,8 @@ async function chooseDetection(page: any, mode: "basic" | "full"): Promise<boole
 }
 
 /** 「发布设置」弹窗：选「是否使用AI」→「确认提交」（真正触发发布） */
-async function confirmPublishSettings(page: any, useAI: boolean): Promise<boolean> {
-  const deadline = Date.now() + 20000;
+async function confirmPublishSettings(page: any, useAI: boolean, timeoutMs = 20000): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
   let present = false;
   while (Date.now() < deadline) {
     present = await hasModalMatching(page, "发布设置");
@@ -292,8 +355,7 @@ async function clickByEvaluate(page: any, pred: (btn: any) => boolean): Promise<
   return true;
 }
 
-/** 「错别字未修改」之类的二次确认：点提交 */
-async function clickSubmitInModal(page: any): Promise<boolean> {
+/** 「错别字未修改」之类的二次确认：点提交 */async function clickSubmitInModal(page: any): Promise<boolean> {
   const found = await page.evaluate(() => {
     const ds = Array.from(
       document.querySelectorAll('[role="dialog"], [class*="modal"], [class*="dialog"]')
@@ -326,6 +388,55 @@ async function clickSubmitInModal(page: any): Promise<boolean> {
     .evaluate(() => document.querySelector('[data-autopub-modal="1"]')?.removeAttribute("data-autopub-modal"))
     .catch(() => {});
   return true;
+}
+
+/**
+ * 依次处理发布过程中的各类弹窗，直到页面不再弹窗为止。
+ * 实测顺序并非固定：常见为「错别字确认 → 内容检测方式 → 发布设置」，
+ * 首章之后也可能跳过检测/设置。因此不假设顺序，出现谁就处理谁；
+ * 错别字弹窗的「提交」只是继续流程，不能当作发布完成。
+ */
+async function drivePublishDialogs(page: any, detection: "basic" | "full", useAI: boolean): Promise<boolean> {
+  const deadline = Date.now() + 90000;
+  let detDone = false;
+  let setDone = false;
+  let typoCount = 0;
+  let sawAny = false;
+  let quiet = 0;
+  let i = 0;
+  while (Date.now() < deadline) {
+    i++;
+    if (await chooseDetection(page, detection, 1200)) {
+      detDone = true;
+      sawAny = true;
+      quiet = 0;
+      logger.warn(`[dialog#${i}] 已选择内容检测方式`);
+      await sleep(1500);
+      continue;
+    }
+    if (await confirmPublishSettings(page, useAI, 1200)) {
+      setDone = true;
+      sawAny = true;
+      quiet = 0;
+      logger.warn(`[dialog#${i}] 已完成发布设置（是否使用AI=${useAI ? "是" : "否"}）`);
+      await sleep(2500);
+      continue;
+    }
+    if (await clickSubmitInModal(page)) {
+      typoCount++;
+      sawAny = true;
+      quiet = 0;
+      logger.warn(`[dialog#${i}] 错别字确认点提交（第 ${typoCount} 次），继续后续步骤`);
+      await sleep(2500);
+      if (typoCount >= 6) break;
+      continue;
+    }
+    quiet++;
+    if (sawAny && quiet >= 4) break; // 连续多次无弹窗 → 流程结束
+    await sleep(1000);
+  }
+  logger.warn(`[dialogs] 结束 det=${detDone} set=${setDone} typo=${typoCount}`);
+  return typoCount > 0 || detDone || setDone;
 }
 
 /** 读「已发布」章节数与是否包含指定标题 */
@@ -378,9 +489,7 @@ export async function uploadChapter(opts: UploadChapterOptions): Promise<UploadC
 
   const url = chapterUrlTemplate().replace("{bookId}", opts.bookId);
   try {
-    const numSel = await firstMatch(page, [".serial-editor-title-left input"]);
-    const titleSel = await firstMatch(page, ['input[placeholder="请输入标题"]', ".serial-editor-input-hint-area"]);
-    const contentSel = await firstMatch(page, [".syl-editor-container .ProseMirror", ".ProseMirror"]);
+    const { num: numSel, title: titleSel, content: contentSel } = await waitForEditor(page);
     if (!numSel || !titleSel || !contentSel) {
       const file = await shot(page, "chapter-selectors-missing");
       return {
@@ -397,11 +506,30 @@ export async function uploadChapter(opts: UploadChapterOptions): Promise<UploadC
     const num = String(opts.chapterNumber ?? "").trim();
     const plainTitle = cleanChapterTitle(opts.title || "");
     const plainContent = toPlainText(opts.content || "");
+    const expectLen = plainContent.replace(/\s/g, "").length;
 
-    if (num) await fillField(page, numSel, num);
-    await fillField(page, titleSel, plainTitle);
-    await fillField(page, contentSel, plainContent);
-    await sleep(1200);
+    // 正文走 ProseMirror 的 execCommand，偶发填充不完整 → 校验字数并重试
+    let editorLen = 0;
+    for (let attempt = 0; attempt < 4; attempt++) {
+      if (num) await fillField(page, numSel, num);
+      await fillField(page, titleSel, plainTitle);
+      await fillField(page, contentSel, plainContent);
+      await sleep(1000);
+      editorLen = await readEditorLength(page, contentSel);
+      if (editorLen >= expectLen * 0.8) break;
+      logger.warn(`正文填充不完整（${editorLen}/${expectLen}），第 ${attempt + 1} 次重试`);
+      await sleep(800);
+    }
+    if (editorLen < expectLen * 0.8) {
+      const file = await shot(page, "chapter-content-too-short");
+      return {
+        ok: false,
+        action: "aborted",
+        message: `正文填充不完整（编辑器中 ${editorLen} 字 / 应为 ${expectLen} 字），已中止，避免发布空章。`,
+        url: page.url(),
+        screenshotPath: file,
+      };
+    }
 
     // 校验红字（如「章节序号只支持阿拉伯数字」）
     const err = await page.evaluate(() => {
@@ -446,35 +574,27 @@ export async function uploadChapter(opts: UploadChapterOptions): Promise<UploadC
       const file = await shot(page, "chapter-next-missing");
       return { ok: false, action: "aborted", message: "未找到「下一步」按钮，无法进入发布确认页。", url: page.url(), screenshotPath: file };
     }
+    if (!(await waitForEnabled(page, "button.publish-button", 10000))) {
+      const file = await shot(page, "chapter-next-disabled");
+      return {
+        ok: false,
+        action: "aborted",
+        message: "「下一步」按钮一直不可用（正文或标题未填全），已中止。",
+        url: page.url(),
+        screenshotPath: file,
+      };
+    }
     await page.click("button.publish-button");
     await sleep(2500);
 
     const detection: "basic" | "full" = opts.detection === "full" ? "full" : "basic";
-    if (!(await chooseDetection(page, detection))) {
-      const file = await shot(page, "chapter-detection-missing");
-      return {
-        ok: false,
-        action: "aborted",
-        message: "未出现「请选择内容检测方式」弹窗（常见原因：正文长度不足，或页面改版）。请检查正文，或手动完成发布。",
-        url: page.url(),
-        screenshotPath: file,
-      };
-    }
-    await sleep(3000);
 
-    if (!(await confirmPublishSettings(page, opts.useAI === true))) {
-      const file = await shot(page, "chapter-settings-missing");
-      return {
-        ok: false,
-        action: "aborted",
-        message: "未出现「发布设置」弹窗或未能点击「确认提交」，章节仍为草稿。请到作者后台草稿箱手动发布。",
-        url: page.url(),
-        screenshotPath: file,
-      };
+    // Step3-5 轮流处理：内容检测方式 → 发布设置 → 错别字确认（后两者可能被跳过）
+    const submitted = await drivePublishDialogs(page, detection, opts.useAI === true);
+    if (!submitted) {
+      await shot(page, "chapter-submit-missing").catch(() => "");
+      logger.warn("未检测到「提交」确认弹窗，仍尝试复核发布结果");
     }
-    await sleep(5000);
-
-    if (await clickSubmitInModal(page)) await sleep(4000);
 
     const finalUrl = page.url();
     let after = await fetchChapterStats(page, opts.bookId, plainTitle);
@@ -485,7 +605,6 @@ export async function uploadChapter(opts: UploadChapterOptions): Promise<UploadC
     const success = after.found || (before.count >= 0 && after.count > before.count);
     const file = await shot(page, success ? "chapter-published" : "chapter-publish-result").catch(() => "");
 
-    await browser.close().catch(() => {});
     return {
       ok: success,
       action: success ? (opts.scheduledTime ? "scheduled" : "published") : "error",
@@ -498,8 +617,9 @@ export async function uploadChapter(opts: UploadChapterOptions): Promise<UploadC
       publishedAfter: after.count,
     };
   } catch (e) {
-    await browser.close().catch(() => {});
     logger.error(`上传章节异常: ${(e as Error).message}`);
     return { ok: false, action: "error", message: `上传失败: ${(e as Error).message}` };
+  } finally {
+    await browser.close().catch(() => {});
   }
 }

@@ -57,7 +57,8 @@ try {
         else args[k] = raw;
       }
     }
-    const res = await client.callTool({ name, arguments: args });
+    const callTimeout = Number(process.env.MCP_CALL_TIMEOUT_MS || 600000);
+    const res = await client.callTool({ name, arguments: args }, undefined, { timeout: callTimeout });
     const text = res.content?.map((c) => c.text).join("\n") ?? "";
     console.log(text);
     if (res.isError) process.exitCode = 1;
