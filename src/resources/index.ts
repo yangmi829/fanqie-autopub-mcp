@@ -4,6 +4,8 @@ import { automationReadiness } from "../services/auth.js";
 import { cookiesSummary } from "../browser/cookies.js";
 import { SHORT_MIN_WORDS, SHORT_MAX_WORDS } from "../services/short.js";
 import { CONTENT_TAG_CAPS } from "../services/novel.js";
+import { GENRES } from "../knowledge/genres.js";
+import { renderGoldenThree } from "../knowledge/goldenThree.js";
 import { chapterUrlTemplate, createBookUrl, shortManageUrl } from "../browser/endpoints.js";
 
 const MIME = "application/json";
@@ -88,5 +90,19 @@ export function registerResources(server: McpServer): void {
           shortManage: shortManageUrl(),
         },
       })
+  );
+
+  server.registerResource(
+    "genres",
+    "fanqie://genres",
+    { title: "番茄赛道知识库", description: "主流赛道的爽点机制、开篇要求、节奏、避坑清单与建议单章字数（不联网）", mimeType: MIME },
+    async (uri) => json(uri, GENRES)
+  );
+
+  server.registerResource(
+    "golden-three-chapters",
+    "fanqie://golden-three-chapters",
+    { title: "黄金三章方法论", description: "前三章逐章目标与通用节奏要求（markdown）", mimeType: "text/markdown" },
+    async (uri) => ({ contents: [{ uri: uri.href, mimeType: "text/markdown", text: renderGoldenThree() }] })
   );
 }

@@ -8,6 +8,7 @@ import { registerNovelTools } from "./tools/novel.js";
 import { registerChapterTools } from "./tools/chapter.js";
 import { registerShortStoryTools } from "./tools/shortStory.js";
 import { registerLibraryTools } from "./tools/library.js";
+import { registerKnowledgeTools } from "./tools/knowledge.js";
 import { registerStatsTools } from "./tools/stats.js";
 import { registerResources } from "./resources/index.js";
 
@@ -22,6 +23,7 @@ export function buildServer(): McpServer {
   registerChapterTools(server);
   registerShortStoryTools(server);
   registerLibraryTools(server);
+  registerKnowledgeTools(server);
   registerStatsTools(server);
   registerResources(server);
 
@@ -41,7 +43,7 @@ async function main(): Promise<void> {
   const server = buildServer();
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  logger.info(`${SERVER_NAME} v${SERVER_VERSION} 已就绪（stdio），共注册 19 个工具。`);
+  logger.info(`${SERVER_NAME} v${SERVER_VERSION} 已就绪（stdio），共注册 23 个工具、8 个只读资源。`);
 }
 
 main().catch((e) => {

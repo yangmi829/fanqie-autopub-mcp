@@ -299,3 +299,29 @@ create_short_story_tomato(confirm=false) → 校验字数(6000–80000) → 预�
 5. 遗留：真实发布动作仍由你逐次 `confirm=true` 触发。
 
 > 执行中每阶段结束都会给出可验证证据（构建输出、冒烟结果、截图/接口返回）。
+
+
+---
+
+## 10. 后续变更：合并旧服务（2026-10-17）
+
+原 `tomato-novel-mcp`（WorkBuddy server 名 `tomato-novel`）停用；其独有能力与本地数据并入本项目，避免两个服务并存。
+
+**移植的能力（+4 工具，工具总数 19 → 23）**
+
+| 新工具 | 来源 | 说明 |
+|---|---|---|
+| `list_genres` | 旧 `list_genres` + `knowledge/genres.ts` | 12 个赛道知识库（不联网） |
+| `check_originality` | 旧 `check_originality` + `services/originality.ts` | 本地原创度 / AI 味检测，语料改用本地文稿库 `articles` |
+| `export_article` | 旧 `export_chapter` | 导出文稿为 txt/md（覆盖章节与短故事，更贴合新文稿库模型） |
+| `set_book_tags` | 旧 `set_book_tags` | 阅读/内容标签；先查审核锁（`book_detail` 只读 GET），`confirm=true` 才写 |
+
+**新增只读资源（+2，资源总数 6 → 8）**：`fanqie://genres`、`fanqie://golden-three-chapters`
+
+**数据迁移**：旧 `data/` 的 1 本小说设定（含 12539 字大纲、5 个角色）+ 11 章正文（28328 字）+ 6 条发布任务 → 新项目 `data/{novels,articles,publish_tasks}.json`（按新 schema 映射，`originalityScore` 保留）。
+
+**类型新增（纯可选字段，供迁移无损落库）**：`Article.originalityScore`；`Novel.{genre,synopsis,outline,worldSetting,goldenHook,characters,targetWordsPerChapter,status}`。
+
+**有意不移植**：`mark_published`（真实发布无需人工回标）；旧 `create_novel/get_novel/update_novel` 的本地设定读写（设定字段已并入 `Novel`，经资源 `fanqie://novels` 读取）。
+
+**验证**：`npm run build` 0 错；`npm run smoke` 全绿（23 工具 / 8 资源 / 本地调用）；真实后端只读校验 `set_book_tags(confirm=false)` → `can_modify=true`；`check_originality` 在迁移语料上 → `compared_with=10`。

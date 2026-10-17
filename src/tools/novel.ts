@@ -1,7 +1,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { ok, fail, fromService } from "../core/result.js";
-import { listBooks, createBook, validateContentTagCaps, CONTENT_TAG_CAPS } from "../services/novel.js";
+import { listBooks, createBook, setBookTags, validateContentTagCaps, CONTENT_TAG_CAPS } from "../services/novel.js";
 import { novels, newId, nowIso } from "../core/store.js";
 
 const tagShape = z.array(z.string()).optional();
@@ -104,6 +104,46 @@ export function registerNovelTools(server: McpServer): void {
           updatedAt: now,
         });
       }
+      return fromService(r as any);
+    }
+  );
+
+  server.registerTool(
+    "set_book_tags",
+    {
+      title: "设置作品标签（阅读 / 内容）",
+      description:
+        `为已存在的番茄书设置「阅读标签」与「内容标签」。先查作品是否处于审核锁（can_modify），被锁则直接告知原因不修改。` +
+        `内容标签上限：情节≤${CONTENT_TAG_CAPS.plot}/情感≤${CONTENT_TAG_CAPS.emotion}/人设≤${CONTENT_TAG_CAPS.character}/世界观≤${CONTENT_TAG_CAPS.worldview}。` +
+        `默认 confirm=false 只查锁 + 预览；confirm=true 才打开编辑页勾选并保存。`,
+      inputSchema: {
+        book_id: z.string().describe("番茄书 ID"),
+        reading_tags: tagShape.describe("阅读标签"),
+        content_tags: z
+          .object({
+            plot: tagShape.describe("情节标签"),
+            emotion: tagShape.describe("情感标签"),
+            character: tagShape.describe("人设标签"),
+            worldview: tagShape.describe("世界观标签"),
+          })
+          .optional()
+          .describe("内容标签（4 组，各有上限）"),
+        confirm: z.boolean().optional().describe("是否真正打开编辑页勾选并保存，默认 false"),
+        headless: z.boolean().optional().describe("是否无头运行，默认 true"),
+      },
+    },
+    async (args) => {
+      const over = args.content_tags ? validateContentTagCaps(args.content_tags) : [];
+      if (over.length) return fail(`内容标签超出上限：${over.join("；")}`);
+
+      const r = await setBookTags({
+        bookId: args.book_id,
+        readingTags: args.reading_tags,
+        contentTags: args.content_tags,
+        confirm: args.confirm,
+        headless: args.headless,
+      });
+      if (r.action === "preview" || r.action === "locked") return ok(r as any);
       return fromService(r as any);
     }
   );

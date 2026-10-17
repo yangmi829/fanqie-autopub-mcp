@@ -39,6 +39,12 @@ const EXPECTED_TOOLS = [
   "list_articles",
   "get_article",
   "delete_article",
+  "export_article",
+  // 知识库 / 质检
+  "list_genres",
+  "check_originality",
+  // 作品标签
+  "set_book_tags",
   // 统计
   "get_stats",
 ];
@@ -50,6 +56,8 @@ const EXPECTED_RESOURCES = [
   "fanqie://articles",
   "fanqie://tasks",
   "fanqie://publish-rules",
+  "fanqie://genres",
+  "fanqie://golden-three-chapters",
 ];
 
 let failures = 0;
@@ -84,7 +92,7 @@ try {
   // 1) 工具清单
   const tools = await client.listTools();
   const names = tools.tools.map((t) => t.name);
-  check("工具总数=19", names.length === 19, `实际=${names.length}`);
+  check("工具总数=23", names.length === 23, `实际=${names.length}`);
   for (const t of EXPECTED_TOOLS) check(`工具存在: ${t}`, names.includes(t));
 
   // 2) 资源清单
@@ -106,6 +114,15 @@ try {
   r = parse(await client.callTool({ name: "get_article", arguments: { article_id: artId } }));
   check("get_article 取回正文", typeof r?.content === "string" && r.content.includes("第一段"));
 
+  r = parse(await client.callTool({ name: "list_genres", arguments: {} }));
+  check("list_genres 返回赛道知识库", typeof r?.total === "number" && r.total > 0 && Array.isArray(r.genres));
+
+  r = parse(await client.callTool({ name: "check_originality", arguments: { content: "第一段。\n\n第二段。", threshold: 0.25 } }));
+  check("check_originality 返回 similarity/passed", typeof r?.similarity === "number" && typeof r?.passed === "boolean");
+
+  r = parse(await client.callTool({ name: "export_article", arguments: { article_id: artId } }));
+  check("export_article 返回文件路径", typeof r?.filePath === "string" && r.filePath.length > 0, `path=${r?.filePath ?? "?"}`);
+
   r = parse(await client.callTool({ name: "delete_article", arguments: { article_id: artId, confirm: false } }));
   check("delete_article(confirm=false) 为预览", r?.action === "preview" && r?.ok !== false);
 
@@ -116,6 +133,13 @@ try {
   const res = await client.readResource({ uri: "fanqie://publish-rules" });
   const body = JSON.parse(res.contents[0].text);
   check("publish-rules 含短故事字数规则", /6000/.test(JSON.stringify(body)) && /80000/.test(JSON.stringify(body)));
+
+  const genresRes = await client.readResource({ uri: "fanqie://genres" });
+  const genresBody = JSON.parse(genresRes.contents[0].text);
+  check("genres 资源含赛道条目", Array.isArray(genresBody) && genresBody.length > 0);
+
+  const goldenRes = await client.readResource({ uri: "fanqie://golden-three-chapters" });
+  check("golden-three 资源为 markdown", genresBody.length > 0 && /黄金三章/.test(goldenRes.contents[0].text));
 
   console.log(`\n===== 冒烟结果：${failures === 0 ? "全绿 ✅" : failures + " 项失败 ❌"} =====`);
 } catch (e) {

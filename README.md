@@ -60,7 +60,7 @@ node scripts\mcp-cli.mjs --res fanqie://publish-rules            # 读资源
 
 ---
 
-## 2. 工具清单（19 个）
+## 2. 工具清单（23 个）
 
 ### 2.1 登录与状态（3）
 
@@ -70,12 +70,13 @@ node scripts\mcp-cli.mjs --res fanqie://publish-rules            # 读资源
 | `set_tomato_cookies` | 手动导入 cookies（文本或文件路径） |
 | `get_publish_status` | 环境自检：cookies / 浏览器驱动 / 后台可达性；`verify_login=true` 时实开浏览器校验登录态 |
 
-### 2.2 新增小说（2）
+### 2.2 新增小说（3）
 
 | 工具 | 说明 |
 |---|---|
 | `list_novels_tomato` | 读后台真实小说列表；`sync_local=true` 可同步进本地登记（供批量上传用） |
 | `create_novel_tomato` | 驱动 `/main/writer/create` 真实建书 → 返回 `book_id`。必填：书名(≤15字)/频道/主角名1、2(≤5字)/简介(50–500字) |
+| `set_book_tags` | 为已有书设置「阅读标签 / 内容标签」。先查审核锁（`can_modify`），被锁则只告知原因；默认 `confirm=false` 只预览 |
 
 ### 2.3 新增小说章节（3，含批量）
 
@@ -96,16 +97,24 @@ node scripts\mcp-cli.mjs --res fanqie://publish-rules            # 读资源
 | `set_short_story_cover_tomato` | 上传本地封面图片 |
 | `delete_short_story_tomato` | 删除短故事/草稿（默认预览；confirm=true 时驱动草稿箱真实 UI 删除） |
 
-### 2.5 本地文稿库（4）
+### 2.5 本地文稿库（5）
 
 | 工具 | 说明 |
 |---|---|
 | `save_article` | 正文入库（`data/articles.json`），返回 `article_id`，避免长文本反复走工具参数 |
 | `list_articles` | 按 kind / novel_id / status 过滤列出 |
 | `get_article` | 取回全文 |
+| `export_article` | 导出成可直接粘贴到后台的文本文件（txt/md），返回绝对路径；适合人工发布 |
 | `delete_article` | 删除本地文稿（默认预览） |
 
-### 2.6 统计（1）
+### 2.6 知识库 / 质检（2）
+
+| 工具 | 说明 |
+|---|---|
+| `list_genres` | 番茄主流赛道知识库：爽点机制、开篇要求、节奏、避坑清单、建议单章字数（不联网） |
+| `check_originality` | 原创性 / AI 味检测：与文稿库其余条目做 n-gram 比对，并查自我复读、套话密度、对话占比、段落均匀度、字数门槛（不联网） |
+
+### 2.7 统计（1）
 
 | 工具 | 说明 |
 |---|---|
@@ -123,6 +132,8 @@ node scripts\mcp-cli.mjs --res fanqie://publish-rules            # 读资源
 | `fanqie://articles` | 本地文稿库（不含正文全文） |
 | `fanqie://tasks` | 发布任务日志 |
 | `fanqie://publish-rules` | 发布限制须知（短故事字数区间、标签上限、定时支持范围） |
+| `fanqie://genres` | 番茄赛道知识库（12 个赛道的完整设定） |
+| `fanqie://golden-three-chapters` | 黄金三章方法论（markdown） |
 
 ---
 
@@ -165,8 +176,9 @@ src/
 ├── types.ts
 ├── core/                 # paths / logger / result / store(原子写) / text(去 markdown)
 ├── browser/              # driver(puppeteer-core) / cookies / endpoints(路由与接口常量)
-├── services/             # auth / novel / chapter / short / library / stats
-├── tools/                # auth / novel / chapter / shortStory / library / stats
+├── knowledge/            # genres(赛道知识库) / goldenThree(黄金三章)
+├── services/             # auth / novel / chapter / short / library / stats / originality
+├── tools/                # auth / novel / chapter / shortStory / library / knowledge / stats
 └── resources/index.ts
 scripts/
 ├── smoke.mjs             # 协议级冒烟（不触网）

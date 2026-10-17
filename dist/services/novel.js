@@ -260,3 +260,130 @@ export async function createBook(opts) {
         return { ok: false, action: "error", message: `建书异常: ${e.message}` };
     }
 }
+/**
+ * 查询某本书是否处于「作品信息审核中」等锁定状态（此时阅读/内容标签无法修改）。
+ * 走 author API book_detail（只读 GET，免签名）。
+ */
+export async function getBookTagStatus(bookId) {
+    const readiness = automationReadiness();
+    if (!readiness.ready) {
+        return { ok: false, canModify: false, reason: `前置条件未满足：\n- ${readiness.reasons.join("\n- ")}` };
+    }
+    const session = await openSession(true, "/main/writer/book-manage");
+    if (isError(session))
+        return { ok: false, canModify: false, reason: session.error };
+    const { browser, page } = session;
+    try {
+        const detail = await apiGet(page, API.bookDetail, {
+            book_id: bookId,
+            image_fmt_list: "160x214",
+        });
+        if (detail?.error)
+            return { ok: false, canModify: false, reason: `查询失败: ${detail.error}` };
+        if (detail?.code !== undefined && detail.code !== 0) {
+            return { ok: false, canModify: false, reason: `接口返回 code=${detail.code} message=${detail.message}` };
+        }
+        const d = detail?.data || {};
+        return {
+            ok: true,
+            canModify: d.can_modify === true || d.can_modify === 1,
+            reason: d.cannot_modify_reason || undefined,
+            bookName: d.book_name,
+            category: d.category,
+        };
+    }
+    catch (e) {
+        return { ok: false, canModify: false, reason: `查询异常: ${e.message}` };
+    }
+    finally {
+        await browser.close().catch(() => { });
+    }
+}
+/**
+ * 给「已存在」的书设置阅读/内容标签。
+ * 番茄编辑作品信息受审核锁保护：若作品信息审核中（can_modify=false），直接返回 locked 并附原因，不修改。
+ * confirm=true 时打开编辑页勾选并保存；编辑页 URL（/main/writer/{bookId}/edit）是尽最大努力估记，
+ * 若打不开或找不到标签选择器，会返回 aborted 并提示改走人工编辑。
+ */
+export async function setBookTags(opts) {
+    const readiness = automationReadiness();
+    if (!readiness.ready) {
+        return { ok: false, action: "aborted", message: `前置条件未满足：\n- ${readiness.reasons.join("\n- ")}` };
+    }
+    const bookId = String(opts.bookId || "");
+    if (!bookId)
+        return { ok: false, action: "aborted", message: "缺少 book_id。" };
+    // 先查审核锁（只读）
+    const status = await getBookTagStatus(bookId);
+    if (!status.ok)
+        return { ok: false, action: "error", message: `查询作品状态失败：${status.reason}` };
+    if (!status.canModify) {
+        return {
+            ok: false,
+            action: "locked",
+            canModify: false,
+            lockReason: status.reason,
+            message: `作品信息当前被锁定（${status.reason || "不可修改"}），暂无法设置标签。` +
+                `通常审核通过后即可修改；或建书时用 create_novel_tomato 的 reading_tags / content_tags 直接带上。`,
+        };
+    }
+    if (!opts.confirm) {
+        return {
+            ok: true,
+            action: "preview",
+            canModify: true,
+            message: `作品《${status.bookName ?? bookId}》可修改，未真正写入（confirm=false）。` +
+                `确认无误后传 confirm=true 执行（将打开编辑页勾选并保存）。`,
+        };
+    }
+    const editPath = `/main/writer/${bookId}/edit`;
+    const session = await openSession(opts.headless ?? true, editPath);
+    if (isError(session))
+        return { ok: false, action: "aborted", message: session.error };
+    const { browser, page } = session;
+    try {
+        const hasSelectors = await page.evaluate(() => !!document.querySelector("#selectRow .select-view") ||
+            !!document.querySelector("#activitySelectRow .select-view"));
+        if (!hasSelectors) {
+            const screenshotPath = await shot(page, "book-edit-no-selectors").catch(() => "");
+            await browser.close().catch(() => { });
+            return {
+                ok: false,
+                action: "aborted",
+                message: `编辑页未如期加载标签选择器（预期 ${editPath}），可能 URL 已变或被重定向。` +
+                    `请到作者后台手动编辑作品信息设置标签。`,
+                url: `${authorApiBase()}${editPath}`,
+                screenshotPath,
+            };
+        }
+        const res = await selectTagsOnCreatePage(page, opts.readingTags ?? [], opts.contentTags ?? {});
+        const saved = await page.evaluate(() => {
+            const btn = Array.from(document.querySelectorAll("button")).find((b) => /保存|确定|提交/.test(b.textContent || ""));
+            if (btn) {
+                btn.click();
+                return true;
+            }
+            return false;
+        });
+        await sleep(2000);
+        const screenshotPath = await shot(page, "book-edit-tags").catch(() => "");
+        await browser.close().catch(() => { });
+        return {
+            ok: saved,
+            action: saved ? "applied" : "error",
+            message: saved
+                ? `已尝试保存标签。已勾选 阅读[${res.appliedReading.join(",")}] 内容[${res.appliedContent.join(",")}]` +
+                    (res.missing.length ? `；未找到：${res.missing.join("；")}` : "")
+                : "已勾选标签但未找到保存按钮，请到作者后台确认是否保存成功。",
+            appliedReading: res.appliedReading,
+            appliedContent: res.appliedContent,
+            missing: res.missing,
+            url: `${authorApiBase()}${editPath}`,
+            screenshotPath,
+        };
+    }
+    catch (e) {
+        await browser.close().catch(() => { });
+        return { ok: false, action: "error", message: `设置标签异常: ${e.message}` };
+    }
+}

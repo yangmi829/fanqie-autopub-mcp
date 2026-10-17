@@ -1,6 +1,6 @@
 # AGENTS.md
 
-番茄小说（fanqienovel.com）作者后台自动发布 MCP 服务：TypeScript + stdio，19 个工具 + 6 个只读资源。
+番茄小说（fanqienovel.com）作者后台自动发布 MCP 服务：TypeScript + stdio，23 个工具 + 8 个只读资源。
 用户侧用法见 `README.md`；**本文件只写"改这个仓库时必须知道的"**。
 
 ## 命令
@@ -38,6 +38,7 @@
 - 入口 `src/index.ts`：`buildServer()` 注册全部工具与资源后接 `StdioServerTransport`；传 `--selfcheck` 只打印环境自检后退出。
 - SDK 用法：`server.registerTool(name, { description, inputSchema: { ...zodRawShape } }, handler)`（MCP SDK 1.x + zod v4）。
 - 存储：`core/store.ts` 的 `Collection<T>`（JSON 原子写 tmp → rename），集合为 `novels` / `shortStories` / `articles` / `tasks`。
+- 纯本地能力不碰浏览器：知识数据在 `knowledge/`（`list_genres` + 两个资源），检测算法在 `services/originality.ts`（`check_originality`）。
 - 背景与决策记录见 `docs/PLAN.md`。
 
 ## Windows / PowerShell

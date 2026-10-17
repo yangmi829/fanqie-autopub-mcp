@@ -19,11 +19,13 @@ export interface Article {
   publishTime?: string;
   /** 最近一次发布的说明/错误 */
   lastMessage?: string;
+  /** 最近一次原创度检测的综合相似度（0~1，越低越原创） */
+  originalityScore?: number;
   createdAt: string;
   updatedAt: string;
 }
 
-/** 本地小说登记（用于给建书/发章提供默认值，并绑定番茄书 id） */
+/** 本地小说登记（用于给建书/发章提供默认值，并绑定番茄书 id；也保留创作设定） */
 export interface Novel {
   id: string;
   title: string;
@@ -38,6 +40,22 @@ export interface Novel {
   tomatoBookName?: string;
   readingTags?: string[];
   contentTags?: { plot?: string[]; emotion?: string[]; character?: string[]; worldview?: string[] };
+  /** 赛道 key（如 urban_system），参见 list_genres / fanqie://genres */
+  genre?: string;
+  /** 一句话简介 / 核心卖点 */
+  synopsis?: string;
+  /** 全书大纲 */
+  outline?: string;
+  /** 世界观设定 */
+  worldSetting?: string;
+  /** 开篇钩子 */
+  goldenHook?: string;
+  /** 主要人物设定 */
+  characters?: { name: string; role?: string; traits?: string }[];
+  /** 单章目标字数 */
+  targetWordsPerChapter?: number;
+  /** 本地创作状态标记 */
+  status?: string;
   createdAt: string;
   updatedAt: string;
 }
