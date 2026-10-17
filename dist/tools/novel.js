@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { ok, fail, fromService } from "../core/result.js";
 import { listBooks, createBook, setBookTags, validateContentTagCaps, CONTENT_TAG_CAPS } from "../services/novel.js";
+import { updateNovel } from "../services/localNovel.js";
 import { novels, newId, nowIso } from "../core/store.js";
 const tagShape = z.array(z.string()).optional();
 export function registerNovelTools(server) {
@@ -129,5 +130,90 @@ export function registerNovelTools(server) {
         if (r.action === "preview" || r.action === "locked")
             return ok(r);
         return fromService(r);
+    });
+    server.registerTool("update_novel", {
+        title: "修改本地小说登记 / 创作设定",
+        description: "改本地小说登记（data/novels.json）的登记信息与创作设定：书名、频道、简介、主角名、阅读/内容标签、番茄书号绑定，" +
+            "以及 genre/synopsis/outline/world_setting/golden_hook/characters/target_words_per_chapter/status 等创作字段。" +
+            "只覆盖显式传入的字段，未传的保持原值。长文本（大纲/世界观等）可用 *_file 指到磁盘文件，避免把几万字塞进参数。" +
+            "**纯本地，不改动番茄后台**；阅读用资源 fanqie://novels。",
+        inputSchema: {
+            novel_id: z.string().describe("本地小说 id（novel_xxx）"),
+            title: z.string().optional().describe("书名"),
+            gender: z.number().int().min(0).max(1).optional().describe("频道：1=男频，0=女频"),
+            abstract: z.string().optional().describe("作品简介"),
+            protagonist1: z.string().optional().describe("主角名1"),
+            protagonist2: z.string().optional().describe("主角名2"),
+            reading_tags: tagShape.describe("阅读标签"),
+            content_tags: z
+                .object({
+                plot: tagShape.describe("情节标签"),
+                emotion: tagShape.describe("情感标签"),
+                character: tagShape.describe("人设标签"),
+                worldview: tagShape.describe("世界观标签"),
+            })
+                .optional()
+                .describe("内容标签（4 组）"),
+            tomato_book_id: z.string().optional().describe("番茄 book_id（绑定用）"),
+            tomato_book_name: z.string().optional().describe("番茄书名"),
+            genre: z.string().optional().describe("赛道 key（参见 list_genres）"),
+            synopsis: z.string().optional().describe("一句话简介 / 核心卖点"),
+            outline: z.string().optional().describe("全书大纲（长文本建议改用 outline_file）"),
+            world_setting: z.string().optional().describe("世界观设定（长文本建议改用 world_setting_file）"),
+            golden_hook: z.string().optional().describe("开篇钩子"),
+            characters: z
+                .array(z.object({
+                name: z.string(),
+                role: z.string().optional(),
+                traits: z.string().optional(),
+            }))
+                .optional()
+                .describe("主要人物设定"),
+            target_words_per_chapter: z.number().int().optional().describe("单章目标字数"),
+            status: z.string().optional().describe("本地创作状态标记（如 连载中/已完结）"),
+            synopsis_file: z.string().optional().describe("synopsis 的文本文件路径"),
+            outline_file: z.string().optional().describe("outline 的文本文件路径（如 大纲.md）"),
+            world_setting_file: z.string().optional().describe("world_setting 的文本文件路径"),
+            golden_hook_file: z.string().optional().describe("golden_hook 的文本文件路径"),
+            characters_file: z.string().optional().describe("characters 的 JSON 文件路径：[{name,role?,traits?}]"),
+        },
+    }, async (args) => {
+        const r = await updateNovel({
+            novelId: args.novel_id,
+            title: args.title,
+            gender: args.gender,
+            abstract: args.abstract,
+            protagonist1: args.protagonist1,
+            protagonist2: args.protagonist2,
+            readingTags: args.reading_tags,
+            contentTags: args.content_tags,
+            tomatoBookId: args.tomato_book_id,
+            tomatoBookName: args.tomato_book_name,
+            genre: args.genre,
+            synopsis: args.synopsis,
+            outline: args.outline,
+            worldSetting: args.world_setting,
+            goldenHook: args.golden_hook,
+            characters: args.characters,
+            targetWordsPerChapter: args.target_words_per_chapter,
+            status: args.status,
+            synopsisFile: args.synopsis_file,
+            outlineFile: args.outline_file,
+            worldSettingFile: args.world_setting_file,
+            goldenHookFile: args.golden_hook_file,
+            charactersFile: args.characters_file,
+        });
+        if (!r.ok)
+            return fail(r.message);
+        // 只回摘要：大纲等长字段不往响应里塞
+        return ok({
+            ok: true,
+            action: r.action,
+            message: r.message,
+            novel_id: r.novel?.id,
+            title: r.novel?.title,
+            changed: r.changed,
+            wordCounts: r.wordCounts,
+        });
     });
 }

@@ -15,6 +15,35 @@ import { fileURLToPath } from "node:url";
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), "fanqie-smoke-"));
 
+// 预置最小夹具：一本本地小说 + 两章磁盘工作稿（用于 update_novel / import_articles_from_dir）
+const SMOKE_NOVEL_ID = "nov_smoke0001";
+fs.writeFileSync(
+  path.join(TMP, "novels.json"),
+  JSON.stringify(
+    [
+      {
+        id: SMOKE_NOVEL_ID,
+        title: "冒烟小说",
+        gender: 1,
+        tomatoBookId: "1234567890",
+        createdAt: "2026-01-01T00:00:00.000Z",
+        updatedAt: "2026-01-01T00:00:00.000Z",
+      },
+    ],
+    null,
+    2
+  ),
+  "utf-8"
+);
+const SMOKE_CHAPTER_DIR = path.join(TMP, "chapters");
+fs.mkdirSync(SMOKE_CHAPTER_DIR, { recursive: true });
+fs.writeFileSync(
+  path.join(SMOKE_CHAPTER_DIR, "第01章_十二个人.md"),
+  "# 第01章 十二个人\n\n> **本章概要**：这段元信息不该进正文\n> **本章爽点**：也不该\n\n---\n\n透析室在走廊尽头。\n\n第二段。\n",
+  "utf-8"
+);
+fs.writeFileSync(path.join(SMOKE_CHAPTER_DIR, "第02章_测试二.md"), "# 第02章 测试二\n\n他笑了。\n", "utf-8");
+
 const EXPECTED_TOOLS = [
   // 登录/状态
   "login_tomato",
@@ -23,6 +52,7 @@ const EXPECTED_TOOLS = [
   // 小说
   "list_novels_tomato",
   "create_novel_tomato",
+  "update_novel",
   // 章节
   "list_chapters_tomato",
   "add_chapter_tomato",
@@ -40,6 +70,7 @@ const EXPECTED_TOOLS = [
   "get_article",
   "delete_article",
   "export_article",
+  "import_articles_from_dir",
   // 知识库 / 质检
   "list_genres",
   "check_originality",
@@ -92,7 +123,7 @@ try {
   // 1) 工具清单
   const tools = await client.listTools();
   const names = tools.tools.map((t) => t.name);
-  check("工具总数=23", names.length === 23, `实际=${names.length}`);
+  check("工具总数=25", names.length === 25, `实际=${names.length}`);
   for (const t of EXPECTED_TOOLS) check(`工具存在: ${t}`, names.includes(t));
 
   // 2) 资源清单
@@ -125,6 +156,52 @@ try {
 
   r = parse(await client.callTool({ name: "delete_article", arguments: { article_id: artId, confirm: false } }));
   check("delete_article(confirm=false) 为预览", r?.action === "preview" && r?.ok !== false);
+
+  // 3.5) 修改能力（纯本地）：save_article upsert / update_novel / import_articles_from_dir
+  r = parse(await client.callTool({ name: "save_article", arguments: { article_id: artId, title: "冒烟章节（改名）", chapter_number: 3 } }));
+  check(
+    "save_article(带 article_id) 走更新",
+    r?.action === "updated" && r?.article?.title === "冒烟章节（改名）" && r?.article?.chapterNumber === 3,
+    `action=${r?.action}`
+  );
+
+  r = parse(await client.callTool({ name: "update_novel", arguments: { novel_id: SMOKE_NOVEL_ID, status: "连载中", target_words_per_chapter: 2500, genre: "urban_system" } }));
+  check(
+    "update_novel 写入本地设定",
+    r?.ok === true && Array.isArray(r?.changed) && r.changed.includes("status") && r?.novel_id === SMOKE_NOVEL_ID,
+    `changed=${JSON.stringify(r?.changed)}`
+  );
+
+  r = parse(await client.callTool({ name: "import_articles_from_dir", arguments: { dir: SMOKE_CHAPTER_DIR, novel_id: SMOKE_NOVEL_ID, confirm: false } }));
+  check(
+    "import_articles_from_dir(confirm=false) 为预览且识别 2 章",
+    r?.action === "preview" && r?.created === 2 && r?.updated === 0,
+    `action=${r?.action} created=${r?.created}`
+  );
+
+  r = parse(await client.callTool({ name: "import_articles_from_dir", arguments: { dir: SMOKE_CHAPTER_DIR, novel_id: SMOKE_NOVEL_ID, confirm: true } }));
+  check("import_articles_from_dir(confirm=true) 新建 2 章", r?.action === "imported" && r?.created === 2, `created=${r?.created}`);
+
+  r = parse(await client.callTool({ name: "import_articles_from_dir", arguments: { dir: SMOKE_CHAPTER_DIR, novel_id: SMOKE_NOVEL_ID, confirm: true } }));
+  check(
+    "重复导入变为更新（幂等，不重复建条目）",
+    r?.action === "imported" && r?.created === 0 && r?.updated === 2,
+    `created=${r?.created} updated=${r?.updated}`
+  );
+
+  const ch1 = (r?.planned ?? []).find((p) => p.chapterNumber === 1);
+  r = parse(await client.callTool({ name: "get_article", arguments: { article_id: ch1?.articleId } }));
+  check(
+    "导入结果：章节号/标题/正文都正确（剥掉概要块与 markdown）",
+    r?.chapterNumber === 1 &&
+      r?.title === "第01章 十二个人" &&
+      /透析室在走廊尽头/.test(r?.content || "") &&
+      !/本章概要|\*\*|---/.test(r?.content || ""),
+    `title=${r?.title}`
+  );
+
+  r = parse(await client.callTool({ name: "list_articles", arguments: { novel_id: SMOKE_NOVEL_ID } }));
+  check("导入后该小说下共 2 条文稿", r?.total === 2, `total=${r?.total}`);
 
   r = parse(await client.callTool({ name: "get_publish_status", arguments: { verify_login: false } }));
   check("get_publish_status 可调用并返回 ready 字段", typeof r?.ready === "boolean");

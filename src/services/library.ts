@@ -1,10 +1,10 @@
 import fs from "node:fs";
 import path from "node:path";
 import { articles, novels, shortStories, tasks, newId, nowIso } from "../core/store.js";
-import { DATA_DIR, EXPORT_DIR, ensureDir } from "../core/paths.js";
-import { countCjk, toPlainText } from "../core/text.js";
+import { DATA_DIR, EXPORT_DIR, PROJECT_ROOT, ensureDir, resolveLoosePath } from "../core/paths.js";
+import { countCjk, toPlainText, pad2, cleanChapterTitle } from "../core/text.js";
 import { logger } from "../core/logger.js";
-import type { Article, PublishTask } from "../types.js";
+import type { Article, Novel, PublishTask } from "../types.js";
 import { uploadChapter } from "./chapter.js";
 import { analyzeOriginality } from "./originality.js";
 import { sleep } from "../browser/driver.js";
@@ -32,8 +32,10 @@ export function resolveContent(content?: string, filePath?: string): { text: str
 /* ------------------------------ 文稿库 CRUD ------------------------------ */
 
 export interface SaveArticleInput {
-  kind: "chapter" | "short";
-  title: string;
+  /** 传了就是「改已有条目」，不传就是「新建」 */
+  articleId?: string;
+  kind?: "chapter" | "short";
+  title?: string;
   content?: string;
   filePath?: string;
   novelId?: string;
@@ -43,8 +45,62 @@ export interface SaveArticleInput {
   tomatoItemId?: string;
 }
 
-export async function saveArticle(input: SaveArticleInput): Promise<{ ok: boolean; message: string; article?: Article }> {
-  if (!input.title?.trim()) return { ok: false, message: "缺少标题 title。" };
+export interface SaveArticleResult {
+  ok: boolean;
+  action: "created" | "updated" | "error";
+  message: string;
+  article?: Article;
+}
+
+/**
+ * 入库 / 更新本地文稿。
+ * - 不传 article_id：新建（返回 article_id，避免把长文本反复塞进工具参数）。
+ * - 传 article_id：局部更新（只覆盖显式传入的字段），标题/章节号/状态/绑定 id 都可改。
+ */
+export async function saveArticle(input: SaveArticleInput): Promise<SaveArticleResult> {
+  // ---------- 更新模式 ----------
+  if (input.articleId) {
+    const existing = await articles.get(input.articleId);
+    if (!existing) return { ok: false, action: "error", message: `未找到 article_id=${input.articleId}` };
+
+    const patch: Partial<Article> = {};
+    let source = "未改动正文";
+    if (input.title?.trim()) patch.title = input.title.trim();
+    if (input.kind) patch.kind = input.kind === "short" ? "short" : "chapter";
+    if ((input.content && input.content.trim()) || input.filePath) {
+      try {
+        const r = resolveContent(input.content, input.filePath);
+        source = r.source;
+        const plain = toPlainText(r.text);
+        patch.content = plain;
+        patch.wordCount = countCjk(plain);
+      } catch (e) {
+        return { ok: false, action: "error", message: (e as Error).message };
+      }
+    }
+    if (input.novelId !== undefined) patch.novelId = input.novelId || undefined;
+    if (input.chapterNumber !== undefined) patch.chapterNumber = input.chapterNumber;
+    if (input.status) patch.status = input.status;
+    if (input.tomatoBookId !== undefined) patch.tomatoBookId = input.tomatoBookId || undefined;
+    if (input.tomatoItemId !== undefined) patch.tomatoItemId = input.tomatoItemId || undefined;
+
+    if (!Object.keys(patch).length) {
+      return { ok: false, action: "error", message: "没有提供任何要修改的字段（也要给 title / content / chapter_number 等）。" };
+    }
+
+    patch.updatedAt = nowIso();
+    const updated = await articles.update(input.articleId, patch);
+    logger.info(`[library] 更新 ${updated.kind} 《${updated.title}》 ${updated.wordCount} 字（来源 ${source}）`);
+    return {
+      ok: true,
+      action: "updated",
+      message: `已更新 article_id=${updated.id}《${updated.title}》（${updated.wordCount} 字，${Object.keys(patch).filter((k) => k !== "updatedAt").join("/")}）。`,
+      article: updated,
+    };
+  }
+
+  // ---------- 新建模式 ----------
+  if (!input.title?.trim()) return { ok: false, action: "error", message: "缺少标题 title。" };
   let text = "";
   let source = "";
   try {
@@ -52,7 +108,7 @@ export async function saveArticle(input: SaveArticleInput): Promise<{ ok: boolea
     text = r.text;
     source = r.source;
   } catch (e) {
-    return { ok: false, message: (e as Error).message };
+    return { ok: false, action: "error", message: (e as Error).message };
   }
   const plain = toPlainText(text);
   const now = nowIso();
@@ -72,7 +128,7 @@ export async function saveArticle(input: SaveArticleInput): Promise<{ ok: boolea
   };
   await articles.insert(item);
   logger.info(`[library] 入库 ${item.kind} 《${item.title}》 ${item.wordCount} 字（来源 ${source}）`);
-  return { ok: true, message: `已入库 article_id=${item.id}（${item.wordCount} 字）。`, article: item };
+  return { ok: true, action: "created", message: `已入库 article_id=${item.id}（${item.wordCount} 字）。`, article: item };
 }
 
 export interface ListArticlesFilter {
@@ -333,5 +389,316 @@ export async function batchPublishChapters(opts: BatchPublishOptions): Promise<B
     succeeded,
     failed,
     results,
+  };
+}
+
+/* ------------------ 从磁盘工作稿批量入库 / 更新（本地） ------------------ */
+
+/** 章节标题行：`# 第01章 标题` / `## 第十二章 标题`（兼容中文数字与破折号） */
+const CHAPTER_HEADING_RE = /^#{1,6}\s*第\s*([0-9一二两三四五六七八九十百零]+)\s*章[\s:：、.、_\-—]*(.*)$/;
+/** 任意 markdown 标题行 */
+const ANY_HEADING_RE = /^#{1,6}\s+(.+?)\s*$/;
+/** 合稿文件名：`第01-03章_合稿（润色版）.md` */
+const RANGE_FILE_RE = /^第\s*\d+\s*[-–—~至]\s*\d+\s*章/;
+/** 单章文件名：`第01章_标题.md` */
+const SINGLE_FILE_RE = /^第\s*(\d+)\s*章\s*(?:[-–—_.\s]+)?(.*)$/;
+
+const CN_DIGITS: Record<string, number> = { 零: 0, 一: 1, 二: 2, 两: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9 };
+
+/** 「十二」/「二十一」/「一百零三」→ 12 / 21 / 103；纯数字原样返回，无法解析返回 null */
+function cnToNumber(s: string): number | null {
+  if (/^\d+$/.test(s)) return Number(s);
+  let total = 0;
+  let digit: number | null = null;
+  for (const ch of s) {
+    if (ch in CN_DIGITS) {
+      digit = CN_DIGITS[ch];
+      continue;
+    }
+    if (ch === "十") {
+      total += (digit ?? 1) * 10;
+      digit = null;
+      continue;
+    }
+    if (ch === "百") {
+      total += (digit ?? 1) * 100;
+      digit = null;
+      continue;
+    }
+    return null;
+  }
+  return total + (digit ?? 0);
+}
+
+/**
+ * 去掉章节段首的元信息：工作稿习惯在标题下用引用块写
+ * `> **本章概要**` / `> **本章爽点**` / `> **字数**`，后面跟一条 `---`。
+ * 这些只服务于人工写作，不能进正文，所以在成段前先剥掉。
+ */
+function stripLeadingMeta(lines: string[]): string[] {
+  const out = [...lines];
+  while (out.length && !out[0].trim()) out.shift();
+  while (out.length && /^\s*>/.test(out[0])) out.shift();
+  while (out.length && (!out[0].trim() || /^\s*-{3,}\s*$/.test(out[0]))) out.shift();
+  return out;
+}
+
+function sectionToContent(lines: string[]): string {
+  return toPlainText(stripLeadingMeta(lines).join("\n"));
+}
+
+/**
+ * 按 `# 第N章 标题` 切分正文。
+ * 遇到非章节标题（如 `# 附录 —— 角色名录`、`## 目录`）即结束当前章节，
+ * 避免把附录内容并进最后一章。
+ */
+function splitChaptersFromText(text: string): { chapterNumber: number; title: string; content: string }[] {
+  const sections: { num: number; title: string; lines: string[] }[] = [];
+  let current: { num: number; title: string; lines: string[] } | null = null;
+
+  for (const line of text.split(/\r?\n/)) {
+    if (ANY_HEADING_RE.test(line)) {
+      const m = CHAPTER_HEADING_RE.exec(line);
+      const num = m ? cnToNumber(m[1]) : null;
+      if (m && num !== null) {
+        current = { num, title: cleanChapterTitle((m[2] || "").trim()) || `第${num}章`, lines: [] };
+        sections.push(current);
+      } else {
+        current = null;
+      }
+      continue;
+    }
+    if (current) current.lines.push(line);
+  }
+
+  return sections
+    .map((s) => ({ chapterNumber: s.num, title: s.title, content: sectionToContent(s.lines) }))
+    .filter((s) => s.content.length > 0);
+}
+
+/** 归一化目录名/书名：工作稿目录常省标点（`请在全网面前叫我废物_<书号>` vs 书名「请在全网面前，叫我废物」） */
+function normalizeName(s: string): string {
+  return s.replace(/[，,。.、·！!？?：:；;「」《》\s]/g, "");
+}
+
+/** 本地小说对应的工作稿目录候选（默认 <工作区>/小说/<书名>_<番茄书号>/章节） */
+function guessNovelDirs(novel: Novel | undefined): string[] {
+  if (!novel) return [];
+  const base = process.env.FANQIE_NOVEL_DIR || path.join(PROJECT_ROOT, "..", "小说");
+  const out: string[] = [];
+  const push = (dir: string) => out.push(path.join(dir, "章节"), dir);
+
+  for (const n of [novel.tomatoBookId ? `${novel.title}_${novel.tomatoBookId}` : "", novel.title].filter(Boolean)) {
+    push(path.join(base, n));
+  }
+
+  // 容错：按「含番茄书号」或「归一化书名相同」匹配目录名
+  try {
+    const want = normalizeName(novel.title);
+    for (const entry of fs.readdirSync(base, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+      const byId = !!novel.tomatoBookId && entry.name.includes(novel.tomatoBookId);
+      const byName = normalizeName(entry.name.split("_")[0]) === want;
+      if (byId || byName) push(path.join(base, entry.name));
+    }
+  } catch {
+    /* 工作区目录不存在就只保留精确候选 */
+  }
+  return out;
+}
+
+export interface ImportArticlesInput {
+  /** 章节稿目录；省略时按本地小说推断（见 guessNovelDirs） */
+  dir?: string;
+  novelId?: string;
+  kind?: "chapter" | "short";
+  /** 新条目状态，默认 draft；已存在条目不会被改状态 */
+  status?: "draft" | "published" | "failed";
+  /** 已存在（同小说同章节号）是否覆盖正文，默认 true */
+  updateExisting?: boolean;
+  /** 是否真正写入，默认 false（只预览） */
+  confirm?: boolean;
+}
+
+export interface ImportArticlesResult {
+  ok: boolean;
+  action: "preview" | "imported" | "error";
+  message: string;
+  dir?: string;
+  novelId?: string;
+  scannedFiles?: number;
+  /** 本次（预计）新建 / 更新条数 */
+  created: number;
+  updated: number;
+  planned: {
+    file: string;
+    chapterNumber?: number;
+    title: string;
+    wordCount: number;
+    action: "create" | "update";
+    articleId?: string;
+  }[];
+  warnings?: string[];
+}
+
+/**
+ * 把磁盘上的章节工作稿（`小说/<书名>_<书号>/章节/第NN章_标题.md`）批量入库 / 更新到本地文稿库。
+ * 纯本地、不触网。默认 confirm=false 只预览，confirm=true 才写入。
+ * 章节号与标题优先取文内 `# 第N章 标题`；`> **本章概要**` 之类的元信息块与 markdown 标记会被剥掉。
+ */
+export async function importArticlesFromDir(input: ImportArticlesInput): Promise<ImportArticlesResult> {
+  const warnings: string[] = [];
+  const empty = { created: 0, updated: 0, planned: [] as ImportArticlesResult["planned"] };
+
+  let novel: Novel | undefined;
+  if (input.novelId) {
+    novel = await novels.get(input.novelId);
+    if (!novel)
+      return { ok: false, action: "error", message: `未找到本地小说 novel_id=${input.novelId}`, ...empty };
+  }
+
+  let dir = input.dir ? resolveLoosePath(input.dir) : "";
+  if (!dir) {
+    dir = guessNovelDirs(novel).find((c) => fs.existsSync(c)) ?? "";
+    if (!dir) {
+      return {
+        ok: false,
+        action: "error",
+        message: "未提供 dir，且未能按本地小说推断出章节目录。请显式传 dir（如 小说/<书名>_<书号>/章节 的绝对路径）。",
+        ...empty,
+      };
+    }
+  }
+  if (!fs.existsSync(dir))
+    return { ok: false, action: "error", message: `目录不存在：${dir}`, dir, ...empty };
+
+  // 传了小说根目录时自动下探一层 章节/
+  if (path.basename(dir) !== "章节" && fs.existsSync(path.join(dir, "章节"))) dir = path.join(dir, "章节");
+
+  const kind = input.kind ?? "chapter";
+  const files = fs
+    .readdirSync(dir)
+    .filter((f) => /\.(md|txt)$/i.test(f))
+    .sort();
+
+  // ---------- 解析文件 ----------
+  const found: { file: string; chapterNumber?: number; title: string; content: string }[] = [];
+  for (const f of files) {
+    if (RANGE_FILE_RE.test(f)) {
+      warnings.push(`已跳过合稿文件「${f}」（一个文件含多章，避免与单章文件重复）；如需导入请单独放到一个目录。`);
+      continue;
+    }
+    const text = fs.readFileSync(path.join(dir, f), "utf-8");
+    const parts = splitChaptersFromText(text);
+    if (parts.length) {
+      for (const p of parts) found.push({ file: f, ...p });
+      continue;
+    }
+    // 回退：用文件名解析章节号 + 标题
+    const base = f.replace(/\.(md|txt)$/i, "");
+    const m = SINGLE_FILE_RE.exec(base);
+    const lines = text.split(/\r?\n/);
+    const firstHeading = lines.findIndex((l) => ANY_HEADING_RE.test(l));
+    const content = sectionToContent(firstHeading >= 0 ? lines.slice(firstHeading + 1) : lines);
+    if (m && content) {
+      const num = Number(m[1]);
+      found.push({ file: f, chapterNumber: num, title: cleanChapterTitle(m[2].trim()) || `第${num}章`, content });
+    } else {
+      warnings.push(`已跳过「${f}」：未识别到「第N章」标题。`);
+    }
+  }
+
+  // ---------- 与现有条目比对 ----------
+  const existing = (await articles.all()).filter((a) => a.kind === kind && (!novel || a.novelId === novel.id));
+  const byNumber = new Map<number, Article>();
+  const byTitle = new Map<string, Article>();
+  for (const a of existing) {
+    if (typeof a.chapterNumber === "number" && !byNumber.has(a.chapterNumber)) byNumber.set(a.chapterNumber, a);
+    if (!byTitle.has(a.title)) byTitle.set(a.title, a);
+  }
+
+  const items: (ImportArticlesResult["planned"][number] & { content: string })[] = [];
+  const seen = new Set<number>();
+  for (const f of found) {
+    const num = f.chapterNumber;
+    if (typeof num === "number") {
+      if (seen.has(num)) {
+        warnings.push(`第 ${num} 章在多处出现，已跳过「${f.file}」（保留先出现的）。`);
+        continue;
+      }
+      seen.add(num);
+    }
+    const title = typeof num === "number" ? `第${pad2(num)}章 ${f.title}` : f.title;
+    const hit = typeof num === "number" ? byNumber.get(num) : byTitle.get(title);
+    if (hit && input.updateExisting === false) {
+      warnings.push(`已存在「${hit.title}」(${hit.id})，按 update_existing=false 跳过。`);
+      continue;
+    }
+    items.push({
+      file: f.file,
+      chapterNumber: num,
+      title,
+      wordCount: countCjk(f.content),
+      action: hit ? "update" : "create",
+      articleId: hit?.id,
+      content: f.content,
+    });
+  }
+
+  const created = items.filter((i) => i.action === "create").length;
+  const updated = items.length - created;
+  const planned = items.map(({ content, ...rest }) => rest);
+
+  if (!input.confirm) {
+    return {
+      ok: true,
+      action: "preview",
+      message: `预览（confirm=false）：扫描「${dir}」${files.length} 个文件，识别 ${found.length} 章；待新建 ${created} 章、待更新 ${updated} 章。确认后传 confirm=true 写入本地文稿库。`,
+      dir,
+      novelId: novel?.id,
+      scannedFiles: files.length,
+      created,
+      updated,
+      planned,
+      warnings: warnings.length ? warnings : undefined,
+    };
+  }
+
+  // ---------- 写入 ----------
+  const now = nowIso();
+  for (const it of items) {
+    if (it.action === "update" && it.articleId) {
+      const patch: Partial<Article> = { title: it.title, content: it.content, wordCount: it.wordCount, updatedAt: now };
+      if (it.chapterNumber !== undefined) patch.chapterNumber = it.chapterNumber;
+      if (novel?.tomatoBookId) patch.tomatoBookId = novel.tomatoBookId;
+      await articles.update(it.articleId, patch);
+    } else {
+      await articles.insert({
+        id: newId("art"),
+        kind,
+        title: it.title,
+        content: it.content,
+        wordCount: it.wordCount,
+        novelId: novel?.id,
+        chapterNumber: it.chapterNumber,
+        status: input.status ?? "draft",
+        tomatoBookId: novel?.tomatoBookId,
+        createdAt: now,
+        updatedAt: now,
+      });
+    }
+  }
+  logger.info(`[library] 从 ${dir} 导入：新建 ${created} / 更新 ${updated}`);
+  return {
+    ok: true,
+    action: "imported",
+    message: `已写入本地文稿库：新建 ${created} 章、更新 ${updated} 章（共 ${items.length} 章）。`,
+    dir,
+    novelId: novel?.id,
+    scannedFiles: files.length,
+    created,
+    updated,
+    planned,
+    warnings: warnings.length ? warnings : undefined,
   };
 }

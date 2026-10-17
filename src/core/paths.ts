@@ -26,3 +26,14 @@ export function ensureDirs(): void {
   ensureDir(EXPORT_DIR);
   ensureDir(SHOT_DIR);
 }
+
+/**
+ * 解析用户传入的文件/目录路径（工作稿在仓库外，所以不能用 cwd 兜底）。
+ * 绝对路径原样返回；相对路径依次按「项目根」「项目根的上一级（工作区根）」尝试，
+ * 命中即返回，都不存在则返回第一个候选，交由调用方报错时展示。
+ */
+export function resolveLoosePath(p: string): string {
+  if (path.isAbsolute(p)) return p;
+  const candidates = [path.resolve(PROJECT_ROOT, p), path.resolve(PROJECT_ROOT, "..", p)];
+  return candidates.find((c) => fs.existsSync(c)) ?? candidates[0];
+}
