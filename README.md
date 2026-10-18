@@ -58,35 +58,51 @@ node scripts\mcp-cli.mjs --res fanqie://publish-rules            # 读资源
 
 改完后需在 WorkBuddy 连接器页点「信任」并重启会话。
 
+> 不想 clone 仓库的，见 §1.3 的 npm / npx 安装方式。
+
 ### 1.2 远程接入（Streamable HTTP）
 
-默认仍是 stdio（本地零改动）。要让别的机器 / 云端 Agent 接入，用 `--http` 或 `FANQIE_TRANSPORT=http` 启动 HTTP 端点：
+默认仍是 stdio（本地零改动）。要让别的机器 / 云端 Agent 接入，用 `--http` 或 `FANQIE_TRANSPORT=http` 启动 HTTP 端点。
+
+**本机自用：零配置、免鉴权**（默认只监听 `127.0.0.1`，不设任何环境变量即可）：
 
 ```powershell
-$token = node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
-$env:FANQIE_HTTP_TOKEN = $token        # 必填：Bearer 鉴权
 npm run start:http                     # 等价于 node dist/index.js --http
 ```
 
 启动后 stderr 会打印真实端点（`FANQIE_HTTP_PORT=0` 时由系统分配空闲端口）：
 
 ```
-远程端点已就绪: http://127.0.0.1:8765/mcp（Bearer 鉴权 / 可写模式）
+远程端点已就绪: http://127.0.0.1:8765/mcp（本机免鉴权 / 可写模式）
 ```
 
-客户端侧（任何支持 Streamable HTTP 的 MCP 客户端）：
+客户端侧（任何支持 Streamable HTTP 的 MCP 客户端）——本机免鉴权时**不用带任何请求头**：
 
 ```json
 {
   "mcpServers": {
     "fanqie-autopub": {
       "type": "streamable-http",
-      "url": "http://127.0.0.1:8765/mcp",
-      "headers": { "Authorization": "Bearer <你的 FANQIE_HTTP_TOKEN>" }
+      "url": "http://127.0.0.1:8765/mcp"
     }
   }
 }
 ```
+
+**让别的机器 / 云端 Agent 接入：绑非回环地址时必须设 Token**（不带 Token 会直接拒绝启动）：
+
+```powershell
+$token = node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+$env:FANQIE_HTTP_TOKEN = $token        # 绑 0.0.0.0 等非回环地址时必填
+$env:FANQIE_HTTP_HOST  = "0.0.0.0"     # 默认 127.0.0.1；对外会打印告警
+npm run start:http
+```
+
+```
+远程端点已就绪: http://127.0.0.1:8765/mcp（Bearer 鉴权 / 可写模式）
+```
+
+这时客户端要在 `headers` 里带上 `"Authorization": "Bearer <你的 FANQIE_HTTP_TOKEN>"`。
 
 手动核对（PowerShell）：
 
@@ -94,16 +110,50 @@ npm run start:http                     # 等价于 node dist/index.js --http
 Invoke-WebRequest http://127.0.0.1:8765/health -UseBasicParsing   # 探活：{"ok":true,...}
 ```
 
-安全约定（**别关掉**）：
+安全约定：
 
 | 项 | 行为 |
 |---|---|
 | 监听地址 | 默认 `127.0.0.1`，只对本机开放；`FANQIE_HTTP_HOST=0.0.0.0` 才对外，届时会打印醒目告警 |
-| 鉴权 | 强制 `FANQIE_HTTP_TOKEN`，缺失或短于 16 字符**直接拒绝启动**；比对走常量时间，401 响应带 `WWW-Authenticate` |
+| 鉴权 | **回环地址（127.0.0.1 / localhost / ::1）可省略 Token ＝ 本机免鉴权**；一旦绑非回环地址则**强制** `FANQIE_HTTP_TOKEN`，缺失直接拒绝启动，短于 16 字符也拒绝。配了 Token 才校验请求，比对走常量时间，401 响应带 `WWW-Authenticate` |
 | 只读模式 | `FANQIE_HTTP_READONLY=1`：协议入口拦截全部写工具（`publish_*` / `delete_*` / `save_article` / `export_article` …），只读工具与资源照常 |
 | 传输 | MCP 标准 Streamable HTTP（会话按 `mcp-session-id` 维护），非废弃的 SSE 老协议 |
 
-> 这个端点能驱动真实浏览器改线上内容。要对外暴露请放在反向代理 + HTTPS 之后，并给 Token 加轮换。
+> 免鉴权只对**回环地址**开放：同机任何进程（包括别的 Agent / 脚本）都能调用该端点、含写工具。
+> 这个端点能驱动真实浏览器改线上内容，所以**别把它绑到 0.0.0.0 还不设 Token**（服务会直接拒绝）；要对外暴露请放在反向代理 + HTTPS 之后，并给 Token 加轮换。
+
+### 1.3 npm / npx 安装（不 clone 仓库）
+
+包名 `fanqie-autopub-mcp`。**不需要 clone、不需要 build**，MCP 客户端里直接指 `npx`：
+
+```json
+{
+  "mcpServers": {
+    "fanqie-autopub": {
+      "command": "npx",
+      "args": ["-y", "fanqie-autopub-mcp@latest"],
+      "env": {
+        "FANQIE_ENABLE_BROWSER": "1"
+      }
+    }
+  }
+}
+```
+
+好处是这份配置**换机器 / 换系统都不用改路径**（§1.1 的 clone 方式要写死 `dist\index.js` 的绝对路径），升级就是 `@latest`。
+
+命令行试跑（不启动传输，只打印环境自检后退出）：
+
+```powershell
+npx -y fanqie-autopub-mcp@latest --selfcheck
+```
+
+> ⚠️ **数据目录（必读）**：npm / npx 安装时包目录在 npm 缓存里（会被清理），所以数据**不会**放进包目录，而是落到用户目录 **`~/.fanqie-autopub`**（Windows 即 `C:\Users\<你>\.fanqie-autopub`）——cookies、文稿库、截图都在那里。
+>
+> - 想固定在别处（或从旧的 clone 用法**迁移**过来、继续用旧数据）：在 `env` 里显式指定 `"FANQIE_DATA_DIR": "D:\\fanqie-data"`。
+> - 启动日志与 `--selfcheck` 都会打印**实际生效**的数据目录及来源（`env` / `project` / `user`），排障先看这行。
+
+> 📌 已发布到 npm（`fanqie-autopub-mcp`，2026-10-18 v1.0.0）；想用本地 clone 方式（改代码 / 离线）照旧走 §1，功能完全一致。
 
 ---
 
@@ -209,7 +259,7 @@ Invoke-WebRequest http://127.0.0.1:8765/health -UseBasicParsing   # 探活：{"o
 - **限速与人工确认**：批量上传章节之间有 `interval_seconds` 间隔；发布链路保留人工确认环节，规避平台风控。
 - **实名/人脸验证**：短故事发布可能触发实名/人脸验证；命中时服务会停止并截图提示，**不硬闯**。
 - **失败必有证据**：失败自动截图到 `data/screenshots/`，并在返回里给出路径。
-- **远程端点默认关闭且不裸奔**：只有显式 `--http` / `FANQIE_TRANSPORT=http` 才开；默认只监听 `127.0.0.1`、强制 `FANQIE_HTTP_TOKEN`（Bearer，常量时间比对），并可用 `FANQIE_HTTP_READONLY=1` 在协议入口拦掉所有写工具（见 §1.2）。
+- **远程端点默认关闭且不裸奔**：只有显式 `--http` / `FANQIE_TRANSPORT=http` 才开；默认只监听 `127.0.0.1`（**本机免鉴权，零配置**），一旦绑非回环地址就**强制** `FANQIE_HTTP_TOKEN`（Bearer，常量时间比对），缺 Token 直接拒绝启动；并可用 `FANQIE_HTTP_READONLY=1` 在协议入口拦掉所有写工具（见 §1.2）。
 
 ## 5. 已知边界
 
@@ -229,7 +279,7 @@ Invoke-WebRequest http://127.0.0.1:8765/health -UseBasicParsing   # 探活：{"o
 
 | 变量 | 默认 | 说明 |
 |---|---|---|
-| `FANQIE_DATA_DIR` | `<项目>/data` | 数据目录 |
+| `FANQIE_DATA_DIR` | 仓库内（clone）运行：`<项目>/data`；npm / npx 安装：`~/.fanqie-autopub` | 数据目录（cookies / 文稿库 / 截图）。启动日志会打印实际生效值与来源 |
 | `FANQIE_COOKIES_FILE` | `<data>/tomato_cookies.json` | cookies 文件 |
 | `FANQIE_CHROME_PATH` | 自动探测 | Chrome/Edge 可执行文件路径 |
 | `FANQIE_ENABLE_BROWSER` | 开启 | 设为 `0`/`false`/`off` 则彻底禁用浏览器能力 |
@@ -241,8 +291,8 @@ Invoke-WebRequest http://127.0.0.1:8765/health -UseBasicParsing   # 探活：{"o
 | 变量 | 默认 | 说明 |
 |---|---|---|
 | `FANQIE_TRANSPORT` | `stdio` | 设为 `http` 启用远程端点（等价于命令行加 `--http`） |
-| `FANQIE_HTTP_TOKEN` | 无（**必填**） | Bearer Token，<16 字符拒绝启动；生成：`node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"` |
-| `FANQIE_HTTP_HOST` | `127.0.0.1` | 监听地址；改成 `0.0.0.0` 即对外暴露（会告警） |
+| `FANQIE_HTTP_TOKEN` | 无 | Bearer Token。**回环地址可省略（＝本机免鉴权）**；绑非回环地址时必填，缺失或 <16 字符拒绝启动。生成：`node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"` |
+| `FANQIE_HTTP_HOST` | `127.0.0.1` | 监听地址；改成 `0.0.0.0` 即对外暴露（会告警，且**此时必须设 Token**） |
 | `FANQIE_HTTP_PORT` | `8765` | 监听端口；`0` = 由系统分配空闲端口 |
 | `FANQIE_HTTP_PATH` | `/mcp` | MCP 端点路径（`/health` 为免鉴权探活端点） |
 | `FANQIE_HTTP_READONLY` | 关闭 | 设为 `1` 时远程端点拦截全部写工具，只留只读能力 |
@@ -272,16 +322,19 @@ dist/                     # WorkBuddy 实际加载入口（已入库，clone 后
 
 > `dist/` 已特意入库以支持开箱即用；**修改 `src/` 后请 `npm run build`，并把新的 `dist/` 一并提交**，否则运行的是旧产物。
 
+> `data/` 只是**仓库内运行**时的默认落点；npm / npx 安装时数据在 `~/.fanqie-autopub`（见 §1.3），可用 `FANQIE_DATA_DIR` 统一到任意位置。
+
 ## 8. 故障排查
 
 | 症状 | 处理 |
 |---|---|
 | 返回「cookies 已失效」 | 重新执行 `login_tomato` |
+| npx 装的，找不到 cookies / 文稿库 | 数据在用户目录 `~/.fanqie-autopub`（不在包目录）；要沿用旧目录就设 `FANQIE_DATA_DIR`。启动日志 / `--selfcheck` 会打印实际生效目录及来源 |
 | 找不到本机浏览器 | 设置 `FANQIE_CHROME_PATH`，或 `npm i puppeteer`（自带 Chromium） |
 | 选择器找不到 / 页面改版 | 选择器集中在 `src/browser/endpoints.ts` 与各 `services/*.ts` 顶部，按需补充；失败截图在 `data/screenshots/` |
 | 章节发布后未复核到 | 到后台草稿箱确认；`list_chapters_tomato` 复核已发布数 |
-| 远程启动即退出，报 `必须设置 FANQIE_HTTP_TOKEN` | 按 §1.1 生成并导出 Token（<16 字符也会被拒） |
-| 远程客户端 401 | 请求头缺 `Authorization: Bearer <Token>`，或 Token 不匹配 |
+| 远程启动即退出，报 `绑定非回环地址 … 必须设置 FANQIE_HTTP_TOKEN` | 你绑了 `0.0.0.0` 之类非回环地址却没给 Token。只在本机用：把 `FANQIE_HTTP_HOST` 设为 `127.0.0.1` 或删掉该变量（回环地址免鉴权）；要对外则按 §1.2 生成并导出 Token（<16 字符也会被拒） |
+| 远程客户端 401 | 只在服务端配了 Token 时才会 401：请求头缺 `Authorization: Bearer <Token>`，或 Token 不匹配 |
 | 远程客户端 404 | 路径不是 `FANQIE_HTTP_PATH`（默认 `/mcp`；探活是 `/health`） |
 | 远程调用写工具报「只读模式」 | 服务端设了 `FANQIE_HTTP_READONLY=1`，按需去掉（本地 stdio 不受此开关影响） |
 | 远程客户端初始化报 400 / 404 会话过期 | Streamable HTTP 会话在服务端内存里，重启服务后客户端需重连 |

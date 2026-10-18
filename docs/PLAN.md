@@ -492,3 +492,61 @@ create_short_story_tomato(confirm=false) → 校验字数(6000–80000) → 预�
 - `npm run build` 0 错；`npm run smoke` **全绿**，远程阶段断言：端点通告 / `/health` 免鉴权 200 / 无 Token `401` / 远程真协议列出 30 工具 / 远程可调用只读与写工具 / `FANQIE_HTTP_READONLY=1` 时 8 个写工具（含 `login_tomato`、`publish_short_story_tomato`、`export_article`）全部被 `403` 拦截、只读工具照常。
 - 手动验证：无 `FANQIE_HTTP_TOKEN` 启动 exit 1 并给出生成命令；`FANQIE_HTTP_TOKEN=short` exit 1；`FANQIE_TRANSPORT=http FANQIE_HTTP_PORT=0` 能通告真实端口。
 - 全程**未触网**：远程冒烟用临时数据目录 + `FANQIE_ENABLE_BROWSER=0`，写工具即使漏拦也只会报「浏览器能力已关闭」。
+
+---
+
+## 16. npm 发布准备：files 白名单 + 数据目录三级解析（2026-10-18）
+
+**需求**：把服务发布到 npm（`npx fanqie-autopub-mcp`），让用户不再需要 clone 仓库。
+
+### 拍板结论
+- **发（做发布准备），但说清楚它省的是什么**：npm 只解决「安装 + 配置可移植 + 升级」；Node、本机 Chrome、**每人各自扫码登录**这些门槛一步都不会少——写操作必须驱动真实页面（签名由页面 JS 算），所以这服务**永远是本地运行**，发 npm 不等于变云服务。
+- **发布前必须先修两件事**，否则体验反而更差：
+  1. **数据目录**：原来 `DATA_DIR = 包根/data`，走 npx 时那就是 npm 缓存目录（`_npx/<hash>`），`npm cache clean` / 版本更新就会把 cookies 和文稿库一起带走。
+  2. **tarball 白名单**：原来没有 `files` 字段，排除完全依赖 `.gitignore` 兜底——这是脆弱假设，一旦改坏，**有效 cookies 会公开到 registry 且不可撤销**。
+
+### 实现
+- `src/core/paths.ts`：新增 `USER_DATA_DIR = ~/.fanqie-autopub`、`DataDirSource`、`resolveDataDir()`；三级解析 `FANQIE_DATA_DIR` → `<项目根>/data`（存在即用）→ `~/.fanqie-autopub`；导出 `DATA_DIR_SOURCE`。
+  - 第 2 级存在的意义：**保住仓库内 / clone 用法的历史行为**（`data/.gitkeep` 已把目录建出来），不破坏现有 `D:\番茄小说\fanqie-autopub-mcp\data` 里的登录态与文稿库。
+  - 第 3 级带 `.gitkeep`-无关的判定：发布包**不含** `data/`（被 `files` 白名单挡掉），所以 npm 用户的第 2 级判定必然落空，只会拿到用户目录。
+- `src/index.ts`：`--selfcheck` 之后、起传输之前打一行 `数据目录: <path>（来源: env|project|user）`（stderr，不碰 stdout 协议）；不改自检 JSON 的纯净性。
+- `src/services/auth.ts`：`details` 增加 `data_dir` / `data_dir_source`（`get_publish_status`、`fanqie://status`、`get_stats` 顺带都有）。
+- `package.json`：`files: ["dist","README.md","LICENSE"]`；`prepack: npm run build`（`npm pack` 与 `npm publish` 都会先构建，杜绝「改了 src 忘 build 就发」）；补 `repository` / `homepage` / `bugs`。选 `prepack` 而非 `prepublishOnly`：后者不管 `npm pack`，而白名单验证恰恰要靠 `pack`。
+- 文档：README 新增 §1.3（npx 用法 + 数据目录必读）、§6 表格、§7 结构注、§8 排障行；`.env.example` 存储段；AGENTS.md 新增硬约束 14。
+
+### 为什么这样取舍
+- **不做「自动迁移」**（把旧 `data/` 拷到用户目录）：不可见地复制含有效登录态的目录，风险大于收益；改为**保留旧路径优先**，天然零迁移。
+- **不从 `.gitignore` 换成 `.npmignore`**：白名单（`files`）比黑名单安全——新增文件默认不发；`.npmignore` 是反向逻辑，漏一条就是泄漏。
+- **不把数据默认值直接切到用户目录**：会静默废掉现有安装的登录态，且与 AGENTS.md/README 的 clone 工作流冲突。
+
+### 验证
+- `npm run build` 0 错；`npm run smoke` **全绿**（30 工具 / 8 资源 / 远程链路，exit 0）。
+- `npm pack --dry-run --json`：35 个文件，只有 `dist/**` + `package.json` + `README.md` + `LICENSE`；**无 `data/`、`src/`、`scripts/`、`docs/`、`tomato_cookies.json`、`.env*`**。
+- 端到端模拟 npx：把 tgz `npm install` 进空目录（120 包）后运行 `--selfcheck` → `data_dir = <fakehome>\.fanqie-autopub` / `source=user`（包目录里确实没有 `data/`）。
+- 回归：仓库内运行 → `data_dir = D:\番茄小说\fanqie-autopub-mcp\data` / `source=project`（历史行为不变）；`FANQIE_DATA_DIR=…` → `source=env`。三者 `--selfcheck` 均 exit 0，启动日志新增行未破坏 `scripts/smoke.mjs` 的 stderr 锚点解析。
+
+**后续（2026-10-18 当天补齐）**：已用「勾了 Bypass 2FA 的 granular token」以 `npm publish` 正式发布 `fanqie-autopub-mcp@1.0.0` 到公共 registry（`latest = 1.0.0`，35 文件 / 335,731 B；账号 `tfa=false` 时这是唯一可行路径——npm 现要求「2FA **或** 带 Bypass 2FA 的 granular token」，见 AGENTS.md「提交前必须知道」）。registry 上另留了一个 npm 自动创建的 `0.0.0-stage` 占位版本（staged publishing 机制，340 B 空壳，无害）。
+
+---
+
+## 17. 远程鉴权放宽：回环地址免鉴权（2026-10-18）
+
+**需求**：用户希望远程 HTTP 模式「不需要鉴权」。
+
+**拍板（与用户确认后选的方案）**：
+- **仅本机免鉴权**：`FANQIE_HTTP_HOST` 是回环地址（`127.0.0.1` / `localhost` / `::1`，判定复用 `isLoopback()`）时**允许不设 `FANQIE_HTTP_TOKEN`**，端点完全不校验 `Authorization`。
+- **非回环仍然强制**：绑 `0.0.0.0` 等地址且无 Token → `remoteOptions()` 抛错、进程 exit 1；给了 Token 但 <16 字符同样拒绝。
+- 未采纳的两个更激进选项（用户明确没选）：① 任何地址都可裸奔（只打告警）；② 免鉴权时自动降级只读。理由：这个端点能驱动真实浏览器改线上正文，「回环免鉴权」已经覆盖了本机自用这个真实场景，再放就没有任何兜底了。
+
+### 实现
+- `core/remote.ts`：`RemoteOptions.token` 改 `string | null`，新增 `authRequired`；`remoteOptions()` 先解析 host 再判 Token（缺 Token 且非回环才抛错，错误信息直接给出「改回环」或「补 Token」两条路）；`describeRemote()` 新增 `auth_mode: "bearer" | "none"`。
+- `http.ts`：鉴权判断改为 `if (opts.token && !authorized(...))`——没配 Token（只可能是回环）就彻底不校验；启动日志区分 `（Bearer 鉴权 / …）` 与 `（本机免鉴权 / …）`，免鉴权时额外 `logger.warn` 说明「同机任何进程都能调用」。日志格式与 `scripts/smoke.mjs` 的端点正则兼容（URL 捕获仍止于全角括号前）。
+- `scripts/smoke.mjs`：新增 8 条断言——免鉴权启动/日志字样/`/health`/不带 Authorization 列 30 工具/不带 Authorization 调工具，以及「非回环 + 无 Token」「Token 太短」两条拒绝启动分支（新增 `runToExit()` 辅助函数读退出码与 stderr）；原有「配了 Token 时无 Token 请求 401」保留；两个远程启动辅助函数显式固定 `FANQIE_HTTP_HOST=127.0.0.1`，避免外部 shell 变量把冒烟带偏。
+- 文档：README §1.2（拆成「本机零配置免鉴权」+「对外必填 Token」两段、安全约定表、§4、§6.1、§8 两行）、`.env.example`、AGENTS.md 硬约束 13② 与命令段。
+
+### 验证
+- `npm run build` 0 错；`npm run smoke` **全绿 76 项 PASS / 0 FAIL（exit 0）**，其中新增的 8 条见上。
+- 真机手工验证：无 Token 起 `--http` → 日志 `远程端点已就绪: http://127.0.0.1:8791/mcp（本机免鉴权 / 可写模式）` + 免鉴权 WARN；`Invoke-WebRequest` 不带任何请求头 `POST /mcp` 的 `initialize` → **HTTP 200 且返回 `mcp-session-id`**；`--selfcheck` 显示 `token_set:false` / `auth_mode:"none"` / `error:null`；`FANQIE_HTTP_HOST=0.0.0.0` + 无 Token → exit 1，报「绑定非回环地址 0.0.0.0 时必须设置 FANQIE_HTTP_TOKEN」。
+- 回归：带 Token 的老用法行为不变（冒烟里 401 / 30 工具 / 写工具 / 只读拦截全过）。
+
+**安全影响（须知）**：免鉴权只对回环地址开放，等同「同机任何进程可调用」，不再有 Token 作为兜底；跨机 / 云端接入的行为与之前完全一致（仍强制 Token）。
