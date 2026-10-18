@@ -221,6 +221,48 @@ export const SHORT_PUBLISH_SELECTORS = {
 } as const;
 
 /**
+ * 「实名/人脸墙」的文案特征（2026-10-19 修）。
+ *
+ * ⛔️ 不要再对整页 `body.innerText` 做 `/实名|人脸|认证|身份验证/`：短故事编辑页的**正文就在 body 里**，
+ * 正文只要出现「记人脸」「实名」「认证」这类词就 100% 误判（《402的草莓》正文“一是记人脸…”即因此被掐停，
+ * 中止时页面其实是正常的「提交确认」弹窗）。实测本机 18 篇稿件里只有它命中、首发那篇不命中 →
+ * 这个守卫曾把“正文用词”当成“平台要求实名”。
+ *
+ * 现在的判定只认「指令句」（请/需/未/先 … 实名/人脸），且优先只看可见模态。
+ */
+const AUTH_WALL_TEXT_RE = /(请|需|未|先)[^。！？\n]{0,10}(实名|人脸|身份验证|身份认证)/;
+
+/**
+ * 是否出现实名/人脸拦截（返回命中的文案片段，未命中返回 null）。
+ * ① 可见模态（实名墙一定是模态；排除已知的「提交确认」弹窗）
+ * ② 兜底：整页文本，但**剔除编辑器正文容器**——正文不该参与判定
+ */
+async function authWallText(page: any): Promise<string | null> {
+  return page
+    .evaluate((src: string) => {
+      const rx = new RegExp(src);
+      const modals = Array.from(document.querySelectorAll(".arco-modal, .arco-drawer")) as any[];
+      for (const m of modals) {
+        if (m.getBoundingClientRect().height <= 40) continue;
+        const t = (m.innerText || "").replace(/\s+/g, " ").trim();
+        if (!t || /提交确认/.test(t)) continue;
+        if (rx.test(t)) return t.slice(0, 120);
+      }
+      let text = document.body?.innerText || "";
+      for (const ed of Array.from(document.querySelectorAll(".syl-editor-container, .serial-editor-content")) as any[]) {
+        const et = ed.innerText || "";
+        if (et) text = text.split(et).join("\n");
+      }
+      text = text.replace(/\s+/g, " ");
+      const hit = text.match(rx);
+      if (!hit) return null;
+      const i = text.indexOf(hit[0]);
+      return text.slice(Math.max(0, i - 30), i + 90);
+    }, AUTH_WALL_TEXT_RE.source)
+    .catch(() => null);
+}
+
+/**
  * 作品分类选择器（2026-10 实测二级浮层）：
  * 点 `.publish-short-category-select` 打开 `.publish-short-category-select-pop`；
  * 左侧 5 个组标题 `.publish-short-category-select-label`（主分类/情节/角色/情绪/背景），
@@ -234,6 +276,8 @@ export const SHORT_CATEGORY_SELECTORS = {
   itemList: ".publish-short-category-select-item-list",
   item: ".publish-short-category-select-item",
   selectedList: ".publish-short-category-select-selected-list",
+  /** 已选标签本身（`名称 + svg.serial-icon-general_close`），可在表单里直接点 × 删掉 */
+  selected: ".publish-short-category-select-selected",
 } as const;
 
 async function firstMatch(page: any, selectors: readonly string[]): Promise<string | null> {
@@ -500,7 +544,7 @@ async function selectCategories(
   const selectedText: string = await page
     .evaluate((s: any) => (document.querySelector(s.selectedList)?.textContent || "").trim(), S)
     .catch(() => "");
-  await page.keyboard.press("Escape").catch(() => {});
+  await closeCategoryPop(page);
   await sleep(300);
 
   for (const name of names) {
@@ -509,7 +553,87 @@ async function selectCategories(
   }
   if (applied.length) logger.info(`[selectCategories] 已选分类：${applied.join("、")}`);
   if (missing.length) logger.warn(`[selectCategories] 未选中：${missing.join("、")}（已选列表=${selectedText}）`);
+
+  // 6) 回读-清理：新建 item 时平台会**自动挂一个默认标签**（2026-10 实测「西方古典」，背景组），
+  //    旧实现只增不删 → 发布出去的分类里混着无关项、清不掉。这里把请求集合之外的已选标签删掉。
+  const pruned = await pruneCategories(page, names);
+  if (pruned.length) logger.info(`[selectCategories] 已移除多余分类：${pruned.join("、")}`);
   return { applied, missing };
+}
+
+/**
+ * 关闭「作品分类」浮层。
+ *
+ * ⚠️ 2026-10-19 实测：`Escape` **关不掉**它（按完 `.publish-short-category-select-pop` 仍在、高 214），
+ * 而浮层会盖在下方表单上：之后所有**真实鼠标点击都会被它吃掉**——点「发布协议」实际点到的是浮层里的分类项，
+ * 于是协议永远勾不上（表现为「发布必填项未补齐：发布协议未勾选」，而不是没反应）。
+ * 唯一有效的方式是**点浮层外的空白处**。
+ */
+async function closeCategoryPop(page: any): Promise<boolean> {
+  const opened = () =>
+    page
+      .evaluate((s: string) => {
+        const p: any = document.querySelector(s);
+        return !!p && p.getBoundingClientRect().height > 0;
+      }, SHORT_CATEGORY_SELECTORS.pop)
+      .catch(() => false);
+  if (!(await opened())) return true;
+  await page.keyboard.press("Escape").catch(() => {});
+  await sleep(300);
+  if (await opened()) await page.mouse.click(20, 300).catch(() => {});
+  await sleep(500);
+  const closed = !(await opened());
+  if (!closed) logger.warn("[selectCategories] 分类浮层未能关闭（会遮挡后续真实鼠标点击）");
+  return closed;
+}
+
+/**
+ * 删掉请求集合之外的已选分类标签（平台默认挂的「西方古典」等）。
+ * 已选标签结构 = `<div.publish-short-category-select-selected>名称<svg.serial-icon-general_close>`，
+ * SVG 没有 `.click()` → 走真实鼠标点 ×（`realClick` 会先 scrollIntoView）。
+ * ⚠️ 必须**在浮层关闭后**做：浮层开着时真实点击落在浮层上，会“看似成功”其实没删掉（已踩过）。
+ * 每次删除都回读已选列表校验，删不掉就如实报错，不谎报成功。
+ */
+async function pruneCategories(page: any, keep: string[]): Promise<string[]> {
+  const removed: string[] = [];
+  const selectedNow = () =>
+    page
+      .evaluate((s: any) => (document.querySelector(s.selectedList)?.textContent || "").trim(), SHORT_CATEGORY_SELECTORS)
+      .catch(() => "");
+  if (!(await closeCategoryPop(page))) return removed;
+
+  for (let guard = 0; guard < 4; guard++) {
+    const target: string | null = await page
+      .evaluate(
+        (names: string[], sel: string) => {
+          const tags = Array.from(document.querySelectorAll(sel)) as any[];
+          for (const t of tags) {
+            const name = (t.textContent || "").trim();
+            if (!name || names.includes(name)) continue;
+            const svg = t.querySelector("svg") as any;
+            if (!svg || svg.getBoundingClientRect().height <= 0) continue;
+            svg.setAttribute("data-autopub-catclear", "1");
+            return name;
+          }
+          return null;
+        },
+        keep,
+        SHORT_CATEGORY_SELECTORS.selected
+      )
+      .catch(() => null);
+    if (!target) break;
+    const clicked = await realClick(page, '[data-autopub-catclear="1"]');
+    await page
+      .evaluate(() => document.querySelector('[data-autopub-catclear="1"]')?.removeAttribute("data-autopub-catclear"))
+      .catch(() => {});
+    await sleep(600);
+    if (!clicked || (await selectedNow()).includes(target)) {
+      logger.warn(`[selectCategories] 分类「${target}」未能移除（点击未生效），请在后台手动核对`);
+      break;
+    }
+    removed.push(target);
+  }
+  return removed;
 }
 
 /* ------------------------------ 新建 / 保存草稿 ------------------------------ */
@@ -829,6 +953,45 @@ async function jsClickButton(page: any, label: string): Promise<boolean> {
   return null;
 }
 
+/**
+ * 真实鼠标点击（坐标点击）：**先 `scrollIntoView` 再取 boundingBox**。
+ *
+ * ⚠️ 顺序不能反：编辑页很长（实测「是否使用AI」在 y≈39205，视口只有 900px），
+ * 不滚动就拿坐标去 `mouse.click` 等于点视口外的空气——字段看着“没反应”，
+ * 其实是压根没点上（短故事兜底脚本 `publish_once.mjs` 就是这么废掉的）。
+ * SVG 元素没有 `.click()`，这类目标也只能走真实鼠标（见 AGENTS.md 硬约束）。
+ */
+async function realClick(page: any, selector: string): Promise<boolean> {
+  const handle = await page.$(selector).catch(() => null);
+  if (!handle) return false;
+  await handle.evaluate((el: any) => el.scrollIntoView({ block: "center" })).catch(() => {});
+  await sleep(200);
+  const box = await handle.boundingBox().catch(() => null);
+  if (!box) return false;
+  await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+  return true;
+}
+
+/** 同上，但按可见文本找元素（弹窗页脚按钮这类没有稳定 class 的目标） */
+async function realClickText(page: any, text: string): Promise<boolean> {
+  const marked = await page
+    .evaluate((t: string) => {
+      const el = (Array.from(document.querySelectorAll("button, span, div")) as any[]).find(
+        (x: any) => (x.textContent || "").trim() === t && x.offsetParent !== null
+      ) as any;
+      if (!el) return false;
+      el.setAttribute("data-autopub-realtarget", "1");
+      return true;
+    }, text)
+    .catch(() => false);
+  if (!marked) return false;
+  const clicked = await realClick(page, '[data-autopub-realtarget="1"]');
+  await page
+    .evaluate(() => document.querySelector('[data-autopub-realtarget="1"]')?.removeAttribute("data-autopub-realtarget"))
+    .catch(() => {});
+  return clicked;
+}
+
 /** 读当前页面上的 toast（`te.A.warning` 类提示 3 秒后自动消失，必须及时抓） */
 async function readToasts(page: any): Promise<string[]> {
   return page
@@ -854,21 +1017,23 @@ async function acceptPublishTerms(page: any): Promise<boolean> {
   const isChecked = () =>
     page.evaluate(() => !!document.querySelector("label.arco-checkbox input")?.checked).catch(() => false);
   if (await isChecked()) return true;
+  const licenseModalUp = () =>
+    page
+      .evaluate(() =>
+        Array.from(document.querySelectorAll(".arco-modal")).some(
+          (m: any) => m.getBoundingClientRect().height > 40 && /发布事项/.test(m.textContent || "")
+        )
+      )
+      .catch(() => false);
   for (let attempt = 1; attempt <= 3; attempt++) {
-    await page.click(SHORT_PUBLISH_SELECTORS.licenseDesc).catch(() => {});
-    await waitFor(
-      () =>
-        page.evaluate(() => {
-          const b = (Array.from(document.querySelectorAll("button")) as any[]).find(
-            (x: any) => /我已阅读并同意/.test(x.textContent || "") && x.getBoundingClientRect().height > 0
-          );
-          if (!b) return false;
-          b.click();
-          return true;
-        }),
-      8000,
-      600
-    );
+    // ⚠️ 分类浮层残留会盖住协议行，真实点击会落到浮层里的分类项 → 协议永远勾不上（2026-10-19 实测）
+    await closeCategoryPop(page);
+    await realClick(page, SHORT_PUBLISH_SELECTORS.licenseDesc);
+    if (!(await waitFor(licenseModalUp, 8000, 600))) {
+      logger.warn(`[short] 第 ${attempt} 次点「发布协议」文字没弹出「短故事发布事项」（疑似被浮层遮挡）`);
+      continue;
+    }
+    await waitFor(() => realClickText(page, "我已阅读并同意"), 8000, 600);
     await sleep(1200);
     if (await isChecked()) return true;
     logger.warn(`[short] 第 ${attempt} 次勾「发布协议」未生效`);
@@ -1121,7 +1286,8 @@ export interface PublishShortStoryOptions {
  * 标题（空/空格/超长/查重）→ 字数 → 封面 → 分类（含主分类）→ 试读比例 → 发布协议 → 是否使用AI。
  * 缺项只会弹 3 秒即消失的 toast，所以本方法先补齐、再用 `readPublishGates` 自检，缺项直接给出明确原因。
  * 封面与「是否使用AI」是内容/合规决策，工具不替用户猜：封面靠 cover_path（或沿用已有），AI 必须显式传 useAI。
- * ⚠️ 发布可能触发实名/人脸验证，命中时只提示、不硬闯。
+ * ⚠️ 发布可能触发实名/人脸验证，命中时只提示、不硬闯（`authWallText`：只看可见弹窗 + 精确指令句，
+ * 且剔除编辑器正文——正文里出现「人脸」「实名」这类词不算命中）。
  */
 export async function publishShortStory(opts: PublishShortStoryOptions): Promise<ShortStoryResult> {
   const readiness = automationReadiness();
@@ -1287,16 +1453,15 @@ export async function publishShortStory(opts: PublishShortStoryOptions): Promise
       await sleep(6000);
     }
 
-    // 实名/人脸：命中就停手，不硬闯
-    const needAuth = await page
-      .evaluate(() => /实名|人脸|认证|身份验证/.test(document.body?.innerText || ""))
-      .catch(() => false);
-    if (needAuth) {
+    // 实名/人脸：命中就停手，不硬闯。
+    // ⚠️ 只看弹窗 + 去掉正文（旧实现扫整页 innerText，正文里“记人脸”之类会被误判成实名墙）
+    const wallText = await authWallText(page);
+    if (wallText) {
       const file = await shot(page, "short-realname-required");
       return {
         ok: false,
         action: "aborted",
-        message: "发布流程疑似要求实名/人脸验证，已停止自动提交。请在浏览器中手动完成验证后再发布。",
+        message: `发布流程疑似要求实名/人脸验证，已停止自动提交。请在浏览器中手动完成验证后再发布。（命中文案：${wallText}）`,
         itemId,
         url: page.url(),
         screenshotPath: file,
