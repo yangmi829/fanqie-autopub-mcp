@@ -70,7 +70,7 @@ node scripts\mcp-cli.mjs --res fanqie://publish-rules            # 读资源
 | `set_tomato_cookies` | 手动导入 cookies（文本或文件路径） |
 | `get_publish_status` | 环境自检：cookies / 浏览器驱动 / 后台可达性；`verify_login=true` 时实开浏览器校验登录态 |
 
-### 2.2 小说：新建与修改（5）
+### 2.2 番茄后台 · 小说与作品（4）
 
 | 工具 | 说明 |
 |---|---|
@@ -78,11 +78,12 @@ node scripts\mcp-cli.mjs --res fanqie://publish-rules            # 读资源
 | `create_novel_tomato` | 驱动 `/main/writer/create` 真实建书 → 返回 `book_id`。必填：书名(≤15字)/频道/主角名1、2(≤5字)/简介(50–500字) |
 | `update_novel_info_tomato` | **改已有作品信息**：书名(≤15字)/主角名1、2(≤5字)/简介(50–500字)/阅读标签/内容标签。走「作品信息(type=1) → 修改 → 立即修改」；受作品信息审核锁保护。默认 `confirm=false` 只展开表单并截图 |
 | `set_book_tags` | 只改「阅读标签 / 内容标签」的快捷入口（内部就是 `update_novel_info_tomato` 的薄包装）。**语义是「确保这些标签处于选中」**：已经选中的会跳过，不会误取消 |
-| `update_novel` | **改本地小说登记 / 创作设定**（`data/novels.json`，**纯本地不碰后台**）：书名/频道/简介/主角名/标签/番茄书号绑定 + `genre`/`synopsis`/`outline`/`world_setting`/`golden_hook`/`characters`/`target_words_per_chapter`/`status`。只覆盖显式传入的字段，长文本可用 `*_file` 指向磁盘文件 |
+
+> 改**本地**创作设定用 `update_novel`（纯本地、不碰后台），见下面 2.7「本地设定与知识」。
 
 > 标签的真实机制（实测）：点标签行 → 弹出独立分类弹窗（标题即「阅读标签」/「内容标签」，选项 `.category-choose-item`，`active`=已选）→ 点选项 → 点弹窗「确认」才落到**表单**。弹窗「确认」**不等于**提交作品信息，最后仍需表单底部的「立即修改」；已验证点完弹窗「确认」但不点「立即修改」时，线上标签原样不变。
 
-### 2.3 小说章节（4，含批量）
+### 2.3 番茄后台 · 小说章节（4，含批量）
 
 | 工具 | 说明 |
 |---|---|
@@ -91,7 +92,7 @@ node scripts\mcp-cli.mjs --res fanqie://publish-rules            # 读资源
 | `update_chapter_tomato` | **改已发布章节**：走章节列表的编辑入口 `publish/{chapterId}/?enter_from=modifychapter`，复用上面同一条发布链路，最后按 `chapter_id` 复核标题。正文可用 `content`/`file_path`/`article_id`；**都不给＝保留线上正文、只改标题**。⚠️ 该编辑器边输入边自动保存，所以 `confirm=false` 时**只打开修改页读现状 + 截图，完全不填充**（避免误改线上）；`confirm=true` 才填入并提交 |
 | `batch_publish_chapters` | 从本地文稿库挑「待发布」章节，按序限速依次上传；单章失败不中断 |
 
-### 2.4 短故事（7）
+### 2.4 番茄后台 · 短故事（7）
 
 | 工具 | 说明 |
 |---|---|
@@ -105,7 +106,7 @@ node scripts\mcp-cli.mjs --res fanqie://publish-rules            # 读资源
 
 > `publish_short_story_tomato` 发布成功后，会在返回里带一个 `microHeadline` 建议块（**请询问用户「要不要再发一条微头条引流」**，并附上自动生成的引导语草稿）。
 
-### 2.5 微头条（短故事「作品推荐」）（2）
+### 2.5 番茄后台 · 微头条（短故事「作品推荐」）（2）
 
 | 工具 | 说明 |
 |---|---|
@@ -114,7 +115,7 @@ node scripts\mcp-cli.mjs --res fanqie://publish-rules            # 读资源
 
 > 微头条规则（官方教程 + 2026-10 实测）：正文 **10–1500 字**（官方建议 ≤500）、图片最多 **3** 张、**每天最多 10 条**、**必须关联一个短篇**；推荐状态按内容质量给量（小流量推荐 → 热推中 / 审核不通过）。
 
-### 2.6 本地文稿库（6）
+### 2.6 本地文稿库与质检（7，纯本地不触网）
 
 | 工具 | 说明 |
 |---|---|
@@ -124,25 +125,17 @@ node scripts\mcp-cli.mjs --res fanqie://publish-rules            # 读资源
 | `export_article` | 导出成可直接粘贴到后台的文本文件（txt/md），返回绝对路径；适合人工发布 |
 | `import_articles_from_dir` | **从磁盘工作稿目录批量导入**（`章节\第NN章_标题.md`）：自动识别章号/标题、剥掉 `> **本章概要**` 元信息块、跳过合稿文件，按 `novel_id + 章号` upsert（已存在则覆盖正文、保留状态与发布时间）。默认 `confirm=false` 只预览清单 |
 | `delete_article` | 删除本地文稿（默认预览） |
+| `check_originality` | 原创性 / AI 味检测：与文稿库其余条目做 n-gram 比对，并查自我复读、套话密度、对话占比、段落均匀度、字数门槛 |
 
-### 2.7 知识库 / 质检（2）
-
-| 工具 | 说明 |
-|---|---|
-| `list_genres` | 番茄主流赛道知识库：爽点机制、开篇要求、节奏、避坑清单、建议单章字数（不联网） |
-| `check_originality` | 原创性 / AI 味检测：与文稿库其余条目做 n-gram 比对，并查自我复读、套话密度、对话占比、段落均匀度、字数门槛（不联网） |
-
-### 2.8 统计（1）
+### 2.7 本地设定与知识（3，纯本地不触网）
 
 | 工具 | 说明 |
 |---|---|
+| `update_novel` | 改**本地** `data/novels.json` 里的作品设定：书名/频道/简介/主角名/标签/番茄书号绑定 + `genre`/`synopsis`/`outline`/`world_setting`/`golden_hook`/`characters`/`target_words_per_chapter`/`status`。长文本可用 `*_file` 指向磁盘文件；只覆盖显式传入的字段 |
+| `list_genres` | 番茄主流赛道知识库：爽点机制、开篇要求、节奏、避坑清单、建议单章字数 |
 | `get_stats` | 本地文稿/任务/登记汇总 + 环境自检；`remote=true` 时再读一次后台真实数据 |
 
-### 2.9 本地小说设定（1）
-
-| 工具 | 说明 |
-|---|---|
-| `update_novel` | 改**本地** `data/novels.json` 里的作品设定：书名/赛道(`genre`)/简介/大纲/世界观/黄金钩子/角色/目标单章字数/状态。长文本（简介、大纲、世界观、黄金钩子）可改传 `*_file` 给文件路径。纯本地、不碰浏览器，只覆盖显式传入的字段 |
+> 分类小计：3 + 4 + 4 + 7 + 2 + 7 + 3 = **30**（与 `npm run smoke` 的 `EXPECTED_TOOLS` 断言一致）。
 
 ---
 
@@ -155,7 +148,7 @@ node scripts\mcp-cli.mjs --res fanqie://publish-rules            # 读资源
 | `fanqie://short-stories` | 本地短故事登记 |
 | `fanqie://articles` | 本地文稿库（不含正文全文） |
 | `fanqie://tasks` | 发布任务日志 |
-| `fanqie://publish-rules` | 发布限制须知（短故事字数区间、标签上限、定时支持范围） |
+| `fanqie://publish-rules` | 发布限制须知（短故事字数区间、标签上限、定时支持范围、微头条规则） |
 | `fanqie://genres` | 番茄赛道知识库（12 个赛道的完整设定） |
 | `fanqie://golden-three-chapters` | 黄金三章方法论（markdown） |
 
