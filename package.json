@@ -7,12 +7,26 @@
   "bin": {
     "fanqie-autopub-mcp": "dist/index.js"
   },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
     "build": "tsc",
     "dev": "tsc --watch",
     "start": "node dist/index.js",
     "start:http": "node dist/index.js --http",
-    "smoke": "node scripts/smoke.mjs"
+    "smoke": "node scripts/smoke.mjs",
+    "prepack": "npm run build"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yangmi829/fanqie-autopub-mcp.git"
+  },
+  "homepage": "https://github.com/yangmi829/fanqie-autopub-mcp#readme",
+  "bugs": {
+    "url": "https://github.com/yangmi829/fanqie-autopub-mcp/issues"
   },
   "keywords": [
     "mcp",

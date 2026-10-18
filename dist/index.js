@@ -2,7 +2,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { logger } from "./core/logger.js";
-import { ensureDirs } from "./core/paths.js";
+import { ensureDirs, DATA_DIR, DATA_DIR_SOURCE } from "./core/paths.js";
 import { describeRemote, remoteRequested } from "./core/remote.js";
 import { registerAuthTools } from "./tools/auth.js";
 import { registerNovelTools } from "./tools/novel.js";
@@ -36,6 +36,8 @@ async function main() {
         process.stderr.write(JSON.stringify({ ...automationReadiness(), remote: describeRemote() }, null, 2) + "\n");
         return;
     }
+    // 数据落在哪儿常是排障第一问（cookies / 文稿都在里面），启动时明确报一次
+    logger.info(`数据目录: ${DATA_DIR}（来源: ${DATA_DIR_SOURCE}）`);
     // 远程模式：Streamable HTTP（默认仍是 stdio，不改变现有 WorkBuddy 用法）
     if (remoteRequested()) {
         const { startRemoteServer } = await import("./http.js");

@@ -2,6 +2,7 @@ import { sleep, launchBrowser, browserEnabled, puppeteerAvailable, driverName, s
 import { cookiesExist, cookiesPath, cookiesSummary, saveCookies, loadCookies } from "../browser/cookies.js";
 import { authorLoginUrl, bookManageUrl, apiGet, API, isError, openSession } from "../browser/endpoints.js";
 import { logger } from "../core/logger.js";
+import { DATA_DIR, DATA_DIR_SOURCE } from "../core/paths.js";
 export function automationReadiness() {
     const reasons = [];
     if (!browserEnabled())
@@ -17,6 +18,8 @@ export function automationReadiness() {
             browser_enabled: browserEnabled(),
             puppeteer_installed: puppeteerAvailable(),
             driver: driverName(),
+            data_dir: DATA_DIR,
+            data_dir_source: DATA_DIR_SOURCE,
             cookies_file: cookiesPath(),
             cookies: cookiesSummary(),
             login_url: authorLoginUrl(),

@@ -2,6 +2,7 @@ import { sleep, loadPuppeteer, launchBrowser, browserEnabled, puppeteerAvailable
 import { cookiesExist, cookiesPath, cookiesSummary, saveCookies, loadCookies } from "../browser/cookies.js";
 import { authorLoginUrl, bookManageUrl, apiGet, API, isError, openSession } from "../browser/endpoints.js";
 import { logger } from "../core/logger.js";
+import { DATA_DIR, DATA_DIR_SOURCE } from "../core/paths.js";
 
 /* ------------------------------ 前置检查 ------------------------------ */
 
@@ -25,6 +26,8 @@ export function automationReadiness(): Readiness {
       browser_enabled: browserEnabled(),
       puppeteer_installed: puppeteerAvailable(),
       driver: driverName(),
+      data_dir: DATA_DIR,
+      data_dir_source: DATA_DIR_SOURCE,
       cookies_file: cookiesPath(),
       cookies: cookiesSummary(),
       login_url: authorLoginUrl(),

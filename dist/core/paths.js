@@ -1,6 +1,7 @@
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import fs from "node:fs";
+import os from "node:os";
 /**
  * cwd 在 MCP 子进程里是不可靠的（WorkBuddy 拉起时目录不确定），
  * 因此所有路径一律基于模块自身位置解析，绝不使用 process.cwd()。
@@ -8,7 +9,27 @@ import fs from "node:fs";
  */
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 export const PROJECT_ROOT = path.resolve(MODULE_DIR, "..", "..");
-export const DATA_DIR = process.env.FANQIE_DATA_DIR || path.join(PROJECT_ROOT, "data");
+/** 用户级数据目录：npm / npx 安装时包目录在 npm 缓存里（会被清掉），数据绝不能放那儿。 */
+export const USER_DATA_DIR = path.join(os.homedir(), ".fanqie-autopub");
+/**
+ * 数据目录解析顺序（保证同一份 cookies / 文稿始终只落一处）：
+ * 1) `FANQIE_DATA_DIR`（显式指定，最高优先）
+ * 2) `<项目根>/data`：仓库内运行 / clone 用法（`data/.gitkeep` 已把目录建出来），历史行为不变
+ * 3) `~/.fanqie-autopub`：npm / npx 安装（发布包不含 `data/`，包目录会被缓存清理）
+ */
+function resolveDataDir() {
+    const explicit = process.env.FANQIE_DATA_DIR;
+    if (explicit)
+        return { dir: explicit, source: "env" };
+    const inProject = path.join(PROJECT_ROOT, "data");
+    if (fs.existsSync(inProject))
+        return { dir: inProject, source: "project" };
+    return { dir: USER_DATA_DIR, source: "user" };
+}
+const DATA_RESOLVED = resolveDataDir();
+export const DATA_DIR = DATA_RESOLVED.dir;
+/** 数据目录是怎么定下来的（env / project / user）；排障与启动日志用。 */
+export const DATA_DIR_SOURCE = DATA_RESOLVED.source;
 export const EXPORT_DIR = process.env.FANQIE_EXPORT_DIR || path.join(DATA_DIR, "export");
 export const SHOT_DIR = path.join(DATA_DIR, "screenshots");
 export function ensureDir(dir) {
