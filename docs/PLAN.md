@@ -525,7 +525,7 @@ create_short_story_tomato(confirm=false) → 校验字数(6000–80000) → 预�
 - 端到端模拟 npx：把 tgz `npm install` 进空目录（120 包）后运行 `--selfcheck` → `data_dir = <fakehome>\.fanqie-autopub` / `source=user`（包目录里确实没有 `data/`）。
 - 回归：仓库内运行 → `data_dir = D:\番茄小说\fanqie-autopub-mcp\data` / `source=project`（历史行为不变）；`FANQIE_DATA_DIR=…` → `source=env`。三者 `--selfcheck` 均 exit 0，启动日志新增行未破坏 `scripts/smoke.mjs` 的 stderr 锚点解析。
 
-**后续（2026-10-18 当天补齐）**：已用「勾了 Bypass 2FA 的 granular token」以 `npm publish` 正式发布 `fanqie-autopub-mcp@1.0.0` 到公共 registry（`latest = 1.0.0`，35 文件 / 335,731 B；账号 `tfa=false` 时这是唯一可行路径——npm 现要求「2FA **或** 带 Bypass 2FA 的 granular token」，见 AGENTS.md「提交前必须知道」）。registry 上另留了一个 npm 自动创建的 `0.0.0-stage` 占位版本（staged publishing 机制，340 B 空壳，无害）。
+**后续（2026-10-18 当天补齐）**：已用「勾了 Bypass 2FA 的 granular token」以 `npm publish` 正式发布 `fanqie-autopub-mcp@1.0.0` 到公共 registry（`latest = 1.0.0`，35 文件 / 335,731 B；账号 `tfa=false` 时这是唯一可行路径——npm 现要求「2FA **或** 带 Bypass 2FA 的 granular token」，见 AGENTS.md「提交前必须知道」）。registry 上另留了一个 npm 自动创建的 `0.0.0-stage` 占位版本（staged publishing 机制，340 B 空壳，无害）。当天随后又发布了 `1.1.0`（含 §17 的回环免鉴权 + 数据目录改动，35 文件 / 338,415 B；复核时发现版本号硬编码的问题，见 §18）。
 
 ---
 
@@ -550,3 +550,28 @@ create_short_story_tomato(confirm=false) → 校验字数(6000–80000) → 预�
 - 回归：带 Token 的老用法行为不变（冒烟里 401 / 30 工具 / 写工具 / 只读拦截全过）。
 
 **安全影响（须知）**：免鉴权只对回环地址开放，等同「同机任何进程可调用」，不再有 Token 作为兜底；跨机 / 云端接入的行为与之前完全一致（仍强制 Token）。
+
+---
+
+## 18. 服务版本号改为读 package.json（2026-10-18）
+
+**怎么发现的**：发布 1.1.0 后做真机复核，把 registry 上的包装进空目录跑起来，`GET /health` 报的是
+`{"ok":true,…,"version":"1.0.0"}`——包是 1.1.0，服务却自称 1.0.0。
+
+**原因**：`src/index.ts` 里 `const SERVER_VERSION = "1.0.0";` 是写死的字面量，`npm version` 只改
+`package.json`，没人去改这个常量。它喂三处，于是**一起漂**：`GET /health` 的 `version`、MCP `initialize`
+响应的 `serverInfo.version`、stdio 启动日志的 `fanqie-autopub-mcp vX 已就绪`。
+
+**修法**：`core/paths.ts` 新增 `PACKAGE_VERSION`（基于已有的、以 `import.meta.url` 解析的 `PROJECT_ROOT`
+读 `package.json`，读不到退回 `"0.0.0"`），`index.ts` 的 `SERVER_VERSION` 改为引用它。`dist/index.js`
+与仓库内 `src/` 两种布局下 `PROJECT_ROOT` 都指向包根，`package.json` 也在 npm 白名单里（`files` 含
+`package.json` 是 npm 默认行为），故 npx / clone 两条路都能读到。
+
+**防复发**：`scripts/smoke.mjs` 新增 2 条断言——stdio 的 `client.getServerVersion()?.version` 与远程
+`/health` 的 `version` 都必须等于 `package.json` 的 `version`（冒烟自己读 `package.json`）。再出现
+「发了新版、服务报旧版」会直接 FAIL。负向测试过：把 `dist/core/paths.js` 的版本伪造成 `9.9.9` 后
+冒烟精确报出那 2 条 FAIL、exit 1，说明断言不是空转。冒烟当前 **85 项 PASS / 0 FAIL**。
+
+**为什么不顺手 bump 1.1.1 重发**：已发布的 1.1.0 只是**报出来的版本号**旧，功能（免鉴权、数据目录三级
+解析）都已验证正常；重发要再建一次 Bypass-2FA token。留到下次有实质变更时随版本一起带上。
+

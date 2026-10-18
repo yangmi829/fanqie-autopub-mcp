@@ -9,6 +9,20 @@ import os from "node:os";
  */
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 export const PROJECT_ROOT = path.resolve(MODULE_DIR, "..", "..");
+/**
+ * 包版本：唯一真源是 `package.json`（`npm version` 会改它）。
+ * 曾在 `index.ts` 里写死字面量，发版忘改就让 /health、MCP `serverInfo` 与启动日志一起报旧版本
+ * （1.1.0 的包报 1.0.0），所以改为运行时读取，读不到才退回占位值。
+ */
+export const PACKAGE_VERSION = (() => {
+    try {
+        const pkg = JSON.parse(fs.readFileSync(path.join(PROJECT_ROOT, "package.json"), "utf-8"));
+        return pkg.version ?? "0.0.0";
+    }
+    catch {
+        return "0.0.0";
+    }
+})();
 /** 用户级数据目录：npm / npx 安装时包目录在 npm 缓存里（会被清掉），数据绝不能放那儿。 */
 export const USER_DATA_DIR = path.join(os.homedir(), ".fanqie-autopub");
 /**

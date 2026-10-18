@@ -2,7 +2,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { logger } from "./core/logger.js";
-import { ensureDirs, DATA_DIR, DATA_DIR_SOURCE } from "./core/paths.js";
+import { ensureDirs, DATA_DIR, DATA_DIR_SOURCE, PACKAGE_VERSION } from "./core/paths.js";
 import { describeRemote, remoteRequested } from "./core/remote.js";
 import { registerAuthTools } from "./tools/auth.js";
 import { registerNovelTools } from "./tools/novel.js";
@@ -15,7 +15,8 @@ import { registerStatsTools } from "./tools/stats.js";
 import { registerResources } from "./resources/index.js";
 
 const SERVER_NAME = "fanqie-autopub-mcp";
-const SERVER_VERSION = "1.0.0";
+/** 单一真源＝package.json（见 core/paths.ts 的 PACKAGE_VERSION），不要在这里写死版本号 */
+const SERVER_VERSION = PACKAGE_VERSION;
 
 export function buildServer(): McpServer {
   const server = new McpServer({ name: SERVER_NAME, version: SERVER_VERSION });

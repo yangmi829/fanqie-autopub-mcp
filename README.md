@@ -153,7 +153,7 @@ npx -y fanqie-autopub-mcp@latest --selfcheck
 > - 想固定在别处（或从旧的 clone 用法**迁移**过来、继续用旧数据）：在 `env` 里显式指定 `"FANQIE_DATA_DIR": "D:\\fanqie-data"`。
 > - 启动日志与 `--selfcheck` 都会打印**实际生效**的数据目录及来源（`env` / `project` / `user`），排障先看这行。
 
-> 📌 已发布到 npm（`fanqie-autopub-mcp`，2026-10-18 v1.0.0）；想用本地 clone 方式（改代码 / 离线）照旧走 §1，功能完全一致。
+> 📌 已发布到 npm（`fanqie-autopub-mcp`，2026-10-18 v1.1.0）；想用本地 clone 方式（改代码 / 离线）照旧走 §1，功能完全一致。
 
 ---
 

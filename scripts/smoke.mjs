@@ -17,6 +17,8 @@ import { fileURLToPath } from "node:url";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), "fanqie-smoke-"));
+/** 服务版本必须与 package.json 一致（曾经在 index.ts 里写死 → 1.1.0 的包报 1.0.0） */
+const PKG_VERSION = JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf-8")).version;
 
 // 预置最小夹具：一本本地小说 + 两章磁盘工作稿（用于 update_novel / import_articles_from_dir）
 const SMOKE_NOVEL_ID = "nov_smoke0001";
@@ -129,6 +131,13 @@ const client = new Client({ name: "smoke", version: "0.0.0" });
 try {
   await client.connect(transport);
   console.log("已连接 server（stdio）。\n");
+
+  // 0) 服务版本：必须是 package.json 的那个版本，不能是写死的常量
+  check(
+    "stdio serverInfo 版本与 package.json 一致",
+    client.getServerVersion()?.version === PKG_VERSION,
+    `实际=${client.getServerVersion()?.version} 期望=${PKG_VERSION}`
+  );
 
   // 1) 工具清单
   const tools = await client.listTools();
@@ -324,6 +333,11 @@ try {
     const health = await fetch(new URL("/health", srv.url));
     const healthBody = await health.json().catch(() => ({}));
     check("远程 /health 免鉴权可探活", health.status === 200 && healthBody.ok === true);
+    check(
+      "远程 /health 版本与 package.json 一致",
+      healthBody.version === PKG_VERSION,
+      `实际=${healthBody.version} 期望=${PKG_VERSION}`
+    );
 
     const noToken = await fetch(srv.url, {
       method: "POST",
