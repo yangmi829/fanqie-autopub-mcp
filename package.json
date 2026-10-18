@@ -1,7 +1,7 @@
 {
   "name": "fanqie-autopub-mcp",
   "version": "1.0.0",
-  "description": "番茄小说自动发布 MCP：登录 / 新建短故事 / 新增小说 / 新增小说章节（含批量、定时、分章）",
+  "description": "番茄小说自动发布 MCP：登录 / 新建短故事（+微头条引流）/ 新增小说 / 新增小说章节（含批量、定时、分章）",
   "type": "module",
   "main": "dist/index.js",
   "bin": {

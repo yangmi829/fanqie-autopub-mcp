@@ -419,3 +419,43 @@ create_short_story_tomato(confirm=false) → 校验字数(6000–80000) → 预�
 **真机首发结果**（本轮实际发布）：item_id `7697662166328951320`，《青石巷的第三十八步》11638 字，分类 悬疑惊悚(1385)/推理(61)/职场(127)，封面 `book_thumb_uri=novel-pic-r/6c671292835878e5076281feb5aa821a`（600×800 竖版自制封面），`use_ai=是`，试读 30%，勾了发布协议 → 页面出现「返回短故事管理 / 再写一篇」，`edit/v1` 的 `publish_status=1`、`list_short_stories_tomato(status="all")` 可见该条。**注意**：提交时约 01:00，落在审核非工作时间，作品会卡在「审核中」直至次日早上 7–9 点。
 
 **验证**：`npm run build` 0 错；`npm run smoke` 全绿（28 工具 / 8 资源）；发布工具 `confirm=false` 预览路径真机回归通过。
+
+---
+
+## 14. 微头条：新建微头条工具 + 短故事发布后引流建议（2026-10-18）
+
+**需求**：① 新增一个语义为「新建微头条」的工具；② 每次发布短故事后**主动询问用户是否要发微头条**，用户确认后**根据该短故事自动生成表单内容**、再让用户确认后提交。
+
+### 侦察结论（真机逆向）
+- 「微头条」在番茄作者后台 = **作品管理 → 短篇作品 → 作品推荐** = `/main/writer/short-recommend`（草稿箱 `/main/writer/short-recommend-draft`）。形态是「**文字 + 书籍卡片**」，卡片指向自己的短篇作品。
+- API 前缀 `short_article/wtt_*`：
+  - 只读 GET：`wtt_list`（已发列表，含 `status` / `read_count` / `card_book_id` / `can_modify` / `can_delete` / `cant_modify_reason`）、`wtt_draft_list`（草稿箱）。
+  - **只读 POST**：`card_list`（可选卡片列表）——实测**免签名**，直接 fetch 可用 → 为此在 `browser/endpoints.ts` 新增 `apiPostQuery()`（区别于写接口，仅用于这种免签名只读 POST）。
+  - **写接口**：`publish_wtt`（`is_draft=1` 存草稿 / `is_draft=0` 发布）、`delete_wtt` → 带 `msToken`/`a_bogus`，手工 fetch 必 `-2 参数有误`，**必须点页面按钮**（沿用硬约束 1）。
+- 编辑器是右侧**抽屉**：正文 `textarea`（默认值 `#故事推荐#`）+「添加图片」+「添加短篇」。「添加短篇」弹 `.arco-modal.short-modal`「插入短篇」，点 `.short-select-item` → `.short-select-item-selected` → 「确定」把卡片关联进去。
+- **前端硬门**（只弹 toast 提示，不报错）：正文 `<10` 或 `>1500` 字（`警告`）、未关联短篇 →「请添加短篇内容」。
+- 平台约束（非硬门，来自官方教程 / UI）：正文建议 **≤500 字**、账号**每天最多 10 条**、页面 UI 提示最多 **3 张图**。
+
+### 实现
+- 新增 `src/services/microHeadline.ts`（业务 + UI 驱动，顶部 `MICRO_SELECTORS`）：
+  - 常量 `WTT_MIN_CHARS=10` / `WTT_MAX_CHARS=1500` / `WTT_HINT_CHARS=500` / `WTT_MAX_IMAGES=3` / `WTT_DAILY_LIMIT=10`。
+  - 只读：`listMicroHeadlines()` / `listMicroHeadlineDrafts()`（走 `apiGet`）、`fetchMicroHeadlineCards()`（走 `apiPostQuery`）。
+  - 写：`createMicroHeadline()`（打开抽屉 → 填正文 → 选短篇卡片 → `confirm=false` 只填表 + 截图、`confirm=true` 才点发布 / 存草稿）。
+  - 生成器：`buildMicroHeadlineDraft()` —— **纯本地确定性生成**：`#故事推荐#` + 开篇节选（按**句边界**截断）+ 作品卡点句 + 话题标签；返回值带 `warnings` 提示人工润色。生成结果写进 `content` 让用户确认，用户确认后 `confirm=true` 提交（**省略 `content` 结果一致**，服务层会重新生成同一份）。
+- 新增 `src/tools/microHeadline.ts`：`create_micro_headline_tomato`、`list_micro_headlines_tomato`；`src/index.ts` 注册并把启动日志改为 **30 个工具**。
+- `src/tools/shortStory.ts`：新增 `withMicroHeadlineSuggestion()`，`publish_short_story_tomato` 成功后在返回体里附 `microHeadline`（`ask` 问句 + `draftContent` 预览 + `how` 调用示例），并更新工具 description。**「询问用户」用返回体里的建议块实现**（不使用 MCP elicitation，兼容所有客户端）。
+- `src/core/text.ts`：新增 `stripHtml()`。短故事 `edit/v1` 的正文是 `<p>` 片段，**生成引导语前必须 `stripHtml`**，否则标签会混进微头条正文（已修）。
+- `src/resources/index.ts`：`fanqie://publish-rules` 增加 `microHeadline` 规则块（字数门 / 每日上限 / 需关联短篇 / 两段式）。
+- `src/browser/endpoints.ts`：新增路由常量 `shortRecommendUrl` / `shortRecommendDraftUrl`、5 个 `wtt_*` API 常量、`apiPostQuery`。
+
+### 为什么这样取舍
+- **不做 `delete_micro_headline_tomato`**：`delete_wtt` 是写接口 → 得走草稿箱 UI hover → `.serial-icon-general_delete` → 确认（同短故事草稿删除的坑，SVG 没 `.click()`）。当前价值低，先不铺工具面。
+- **额外加只读的 `list_micro_headlines_tomato`**：发布后能看到推荐状态（`小流量推荐` 等）与 `read_count`，便于复盘引流效果；属额外新增，如不需要可移除。
+- **生成器不做 LLM 调用**：MCP 服务本身不接模型，且确定性输出可复现、可让用户直接确认。
+
+### 验证
+- `npx tsc --noEmit` 0 错；`npm run build` 通过；`npm run smoke` **全绿（30 工具 / 8 资源）**（`EXPECTED_TOOLS` / `EXPECTED_RESOURCES` / publish-rules 微头条断言已同步）。
+- **真机预览**：`create_micro_headline_tomato(item_id=7697662166328951320, confirm=false)` 返回 `ok:true` / `action:filled-not-submitted` / `chars:485` / 卡片《青石巷的第三十八步》；截图 `data/screenshots/micro-filled-*.png` 确认表单已填、卡片已关联；**未提交**，`wtt_draft_list` 仍为 0 条（无副作用）。
+- 测试账号已有 1 条微头条（10-18 01:37，状态「小流量推荐」）；注意其 `card_book_id=7697677022889348120` **与 `item_id=7697662166328951320` 不同** → 选卡片时**按标题匹配**，不能按 id 匹配。
+
+**工具数** 28 → 30（`+create_micro_headline_tomato` `+list_micro_headlines_tomato`）。**仍未做（有意）**：`delete_micro_headline_tomato`；**未做真实发布验证**（`confirm=true` 会产生线上公开内容，需用户确认后执行）。

@@ -2,6 +2,7 @@ import { articles, novels, shortStories, tasks } from "../core/store.js";
 import { automationReadiness } from "../services/auth.js";
 import { cookiesSummary } from "../browser/cookies.js";
 import { SHORT_MIN_WORDS, SHORT_MAX_WORDS } from "../services/short.js";
+import { WTT_MIN_CHARS, WTT_MAX_CHARS, WTT_HINT_CHARS, WTT_MAX_IMAGES, WTT_DAILY_LIMIT } from "../services/microHeadline.js";
 import { CONTENT_TAG_CAPS } from "../services/novel.js";
 import { GENRES } from "../knowledge/genres.js";
 import { renderGoldenThree } from "../knowledge/goldenThree.js";
@@ -38,6 +39,16 @@ export function registerResources(server) {
             recommend: "第一人称",
             schedulable: false,
             note: "短故事接口无定时字段，定时发布仅用于小说章节。",
+        },
+        microHeadline: {
+            words: `${WTT_MIN_CHARS}–${WTT_MAX_CHARS}`,
+            best: `≤${WTT_HINT_CHARS} 字（官方教程建议）`,
+            images: `最多 ${WTT_MAX_IMAGES} 张（页面 UI 提示；官方教程写 9 张）`,
+            dailyLimit: WTT_DAILY_LIMIT,
+            requires: "必须关联一个已发布的短篇（卡片）",
+            statuses: "小流量推荐 → 热推中 / 审核不通过（按内容质量给量）",
+            tool: "create_micro_headline_tomato（默认 confirm=false 只填表，返回 content 供用户确认）",
+            note: "发布短故事后建议顺带发一条微头条引流；列表可用 list_micro_headlines_tomato 查看推荐状态与阅读量。",
         },
         novelChapter: {
             schedulable: true,

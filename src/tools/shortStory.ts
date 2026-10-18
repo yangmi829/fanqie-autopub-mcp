@@ -15,6 +15,7 @@ import {
 } from "../services/short.js";
 import { articles, nowIso } from "../core/store.js";
 import { resolveContent } from "../services/library.js";
+import { buildMicroHeadlineDraft, WTT_DAILY_LIMIT } from "../services/microHeadline.js";
 
 const categoryShape = z.array(z.string()).optional().describe("作品分类名称（如 婚姻家庭/现言甜宠），主分类必选，最多 8 个");
 
@@ -28,6 +29,39 @@ async function pickContent(args: { content?: string; file_path?: string; article
   if (args.content) return args.content;
   if (args.file_path) return resolveContent(undefined, args.file_path).text;
   return "";
+}
+
+/**
+ * 短故事发布成功后，附上「是否顺便发一条微头条引流」的建议。
+ *
+ * 微头条（作品推荐）是番茄给短故事引流的官方玩法：文字 + 书籍卡片，每天最多 10 条。
+ * 这里用**本地生成**的引导语草稿（确定性、不联网）让调用方直接拿给用户确认；
+ * 用户点头后再调 `create_micro_headline_tomato`（confirm=false 预览 → confirm=true 提交）。
+ */
+function withMicroHeadlineSuggestion<T extends { ok: boolean; action?: string; itemId?: string }>(
+  r: T,
+  ctx: { title?: string; content?: string }
+): T & { microHeadline?: Record<string, unknown> } {
+  if (r.action !== "published" || !r.itemId) return r;
+  const title = (ctx.title || "").trim();
+  const draft = ctx.content ? buildMicroHeadlineDraft({ title, content: ctx.content }) : undefined;
+  return {
+    ...r,
+    microHeadline: {
+      ask:
+        `已发布短故事（item_id=${r.itemId}）。**请问用户：要不要再发一条「微头条」给这篇短故事引流？**` +
+        `（文字 + 作品卡片，每天最多 ${WTT_DAILY_LIMIT} 条；发布后按内容质量给量：小流量推荐 → 热推中。）`,
+      ...(draft
+        ? {
+            draftContent: draft.content,
+            chars: draft.chars,
+            note: "上方 draftContent 是按短故事自动生成的引导语草稿，先给用户过目；用户认可后再提交。",
+          }
+        : { note: "未拿到正文，无法本地生成草稿：调 create_micro_headline_tomato(item_id=…, confirm=false) 会自动生成并返回 content。" }),
+      how: `create_micro_headline_tomato(item_id="${r.itemId}"${draft ? `, content=<用户确认后的正文>` : ""}, confirm=false) 预览 → 用户确认 → confirm=true 发布。`,
+      warnings: draft?.warnings,
+    },
+  };
 }
 
 export function registerShortStoryTools(server: McpServer): void {
@@ -173,7 +207,9 @@ export function registerShortStoryTools(server: McpServer): void {
         `⚠️ 平台强制三个必填项（缺一个「下一步」只会弹 3 秒即消失的 toast）：` +
         `① 封面（传 cover_path，或该草稿/作品已有封面）；② use_ai=true|false（发布必须显式声明，工具不替你猜）；` +
         `③ 发布协议（自动勾）+ 试读比例（自动点「去设置」落一条 30% 试读线）。` +
-        `发布后按 edit/v1 的 publish_status=1 复核。若命中实名/人脸验证会停止并提示人工完成。字数需在 ${SHORT_MIN_WORDS}–${SHORT_MAX_WORDS}。`,
+        `发布后按 edit/v1 的 publish_status=1 复核。若命中实名/人脸验证会停止并提示人工完成。字数需在 ${SHORT_MIN_WORDS}–${SHORT_MAX_WORDS}。` +
+        `\n**发布成功后本工具会在返回里给出 \`microHeadline\` 建议：请据此询问用户「要不要再发一条微头条给这篇短故事引流」，` +
+        `用户同意后用 create_micro_headline_tomato（先 confirm=false 预览自动生成的引导语，确认后再 confirm=true 发布）。**`,
       inputSchema: {
         item_id: z.string().optional().describe("要发布的短故事 item_id（与 title 二选一）"),
         title: z.string().optional().describe("短故事名称（配合 content 新建并发布）"),
@@ -226,7 +262,7 @@ export function registerShortStoryTools(server: McpServer): void {
           updatedAt: nowIso(),
         });
       }
-      return fromService(r as any);
+      return fromService(withMicroHeadlineSuggestion(r, { title: args.title, content }) as any);
     }
   );
 

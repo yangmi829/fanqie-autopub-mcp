@@ -19,6 +19,22 @@ export function toPlainText(text) {
     t = t.replace(/\n{3,}/g, "\n\n");
     return t.trim();
 }
+/**
+ * HTML 富文本 -> 纯文本。
+ * 番茄短故事 `edit/v1` 返回的 `content` 是 `<p>…</p>` 片段，直接当正文用会把标签带进去。
+ */
+export function stripHtml(html) {
+    return (html || "")
+        .replace(/<br\s*\/?>/gi, "\n")
+        .replace(/<\/(p|div|h[1-6]|li|blockquote|section)>/gi, "\n")
+        .replace(/<[^>]+>/g, "")
+        .replace(/&nbsp;/gi, " ")
+        .replace(/&lt;/gi, "<")
+        .replace(/&gt;/gi, ">")
+        .replace(/&quot;/gi, '"')
+        .replace(/&#39;/g, "'")
+        .replace(/&amp;/gi, "&");
+}
 /** 去掉标题里的「第X章」前缀（番茄序号框与标题框是两个独立输入框） */
 export function cleanChapterTitle(title) {
     return title.replace(/^第\s*[0-9一二三四五六七八九十百零]+\s*章[\s:：、.]*/u, "").trim();

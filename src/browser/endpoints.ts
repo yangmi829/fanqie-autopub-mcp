@@ -32,6 +32,16 @@ export function shortDraftUrl(): string {
   return `${authorApiBase()}/main/writer/short-draft`;
 }
 
+/** 短故事「作品推荐 / 微头条」管理页 */
+export function shortRecommendUrl(): string {
+  return process.env.FANQIE_SHORT_RECOMMEND_URL || `${authorApiBase()}/main/writer/short-recommend`;
+}
+
+/** 微头条草稿箱 */
+export function shortRecommendDraftUrl(): string {
+  return `${authorApiBase()}/main/writer/short-recommend-draft`;
+}
+
 /**
  * 短故事编辑/发布页。
  * 传入 itemId 打开已有作品；不传则打开空白编辑页（番茄会自动 POST new/v0 建一条草稿 item）。
@@ -79,6 +89,12 @@ export const API = {
   shortArticleCheckPre: "/api/author/short_article/check_pre/v0",
   shortArticleCategoryV1: "/api/author/short_article/get_category_list/v1/",
   shortArticleDelete: "/api/author/short_article/delete/v0/",
+  /** 微头条（短故事「作品推荐」）：列表 / 草稿箱 / 可选卡片 / 提交（存草稿或发布）/ 删除 */
+  shortArticleWttList: "/api/author/short_article/wtt_list/v0/",
+  shortArticleWttDraftList: "/api/author/short_article/wtt_draft_list/v0/",
+  shortArticleWttCardList: "/api/author/short_article/card_list/v0/",
+  shortArticlePublishWtt: "/api/author/short_article/publish_wtt/v0/",
+  shortArticleDeleteWtt: "/api/author/short_article/delete_wtt/v0/",
 } as const;
 
 export function withParams(pathname: string, params: Record<string, string | number | undefined>): string {
@@ -159,6 +175,23 @@ export async function apiGet(page: any, pathname: string, params: Record<string,
   return page.evaluate(async (u: string) => {
     try {
       const r = await fetch(u, { credentials: "include" });
+      return await r.json();
+    } catch (e) {
+      return { error: String(e) };
+    }
+  }, url);
+}
+
+/**
+ * 页面上下文里的 POST（参数仍放 query，同番茄前端 `params` 写法）。
+ * ⚠️ 只用于**只读 POST**（实测 `short_article/card_list` 这类免签名可用）；
+ * 真正的写接口（`publish_wtt` / `delete_wtt`）必须驱动真实页面点击，否则会返回 `-2 参数有误`。
+ */
+export async function apiPostQuery(page: any, pathname: string, params: Record<string, string | number | undefined> = {}): Promise<any> {
+  const url = withParams(pathname, params);
+  return page.evaluate(async (u: string) => {
+    try {
+      const r = await fetch(u, { method: "POST", credentials: "include" });
       return await r.json();
     } catch (e) {
       return { error: String(e) };

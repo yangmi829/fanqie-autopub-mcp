@@ -67,6 +67,9 @@ const EXPECTED_TOOLS = [
   "publish_short_story_tomato",
   "set_short_story_cover_tomato",
   "delete_short_story_tomato",
+  // 微头条（短故事「作品推荐」）
+  "create_micro_headline_tomato",
+  "list_micro_headlines_tomato",
   // 文稿库
   "save_article",
   "list_articles",
@@ -126,7 +129,7 @@ try {
   // 1) 工具清单
   const tools = await client.listTools();
   const names = tools.tools.map((t) => t.name);
-  check("工具总数=28", names.length === 28, `实际=${names.length}`);
+  check("工具总数=30", names.length === 30, `实际=${names.length}`);
   for (const t of EXPECTED_TOOLS) check(`工具存在: ${t}`, names.includes(t));
 
   // 2) 资源清单
@@ -213,6 +216,7 @@ try {
   const res = await client.readResource({ uri: "fanqie://publish-rules" });
   const body = JSON.parse(res.contents[0].text);
   check("publish-rules 含短故事字数规则", /6000/.test(JSON.stringify(body)) && /80000/.test(JSON.stringify(body)));
+  check("publish-rules 含微头条规则", /microHeadline/.test(JSON.stringify(body)) && /1500/.test(JSON.stringify(body.microHeadline ?? {})));
 
   const genresRes = await client.readResource({ uri: "fanqie://genres" });
   const genresBody = JSON.parse(genresRes.contents[0].text);
