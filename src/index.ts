@@ -3,6 +3,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { logger } from "./core/logger.js";
 import { ensureDirs } from "./core/paths.js";
+import { describeRemote, remoteRequested } from "./core/remote.js";
 import { registerAuthTools } from "./tools/auth.js";
 import { registerNovelTools } from "./tools/novel.js";
 import { registerChapterTools } from "./tools/chapter.js";
@@ -35,10 +36,19 @@ export function buildServer(): McpServer {
 async function main(): Promise<void> {
   ensureDirs();
 
-  // 便于排障：--selfcheck 只打印环境信息后退出，不启动 stdio 传输
+  // 便于排障：--selfcheck 只打印环境信息后退出，不启动任何传输
   if (process.argv.includes("--selfcheck")) {
     const { automationReadiness } = await import("./services/auth.js");
-    process.stderr.write(JSON.stringify(automationReadiness(), null, 2) + "\n");
+    process.stderr.write(
+      JSON.stringify({ ...automationReadiness(), remote: describeRemote() }, null, 2) + "\n"
+    );
+    return;
+  }
+
+  // 远程模式：Streamable HTTP（默认仍是 stdio，不改变现有 WorkBuddy 用法）
+  if (remoteRequested()) {
+    const { startRemoteServer } = await import("./http.js");
+    await startRemoteServer(buildServer, { name: SERVER_NAME, version: SERVER_VERSION });
     return;
   }
 

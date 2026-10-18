@@ -2,7 +2,7 @@
 
 番茄小说（fanqienovel.com）作者后台**自动发布 MCP**：登录、新增小说、新增小说章节、新建/发布短故事、新建微头条（给短故事引流），并附带定时发布、短故事分章、批量上传、本地文稿库。
 
-- 传输：stdio（WorkBuddy / Claude Desktop / 任意 MCP 客户端）
+- 传输：stdio（WorkBuddy / Claude Desktop / 任意 MCP 客户端）；也可用 Streamable HTTP 远程接入（见 §1.2）
 - 运行时：Node ≥ 20 + 本机 Chrome/Edge（`puppeteer-core`，不下载 Chromium）
 - 存储：`data/` 下的 JSON（原子写），无原生模块、无数据库
 - 安全策略：**所有写操作默认 `confirm=false`（只填表不提交），必须显式 `confirm=true` 才真正提交**
@@ -37,7 +37,7 @@ node scripts\mcp-cli.mjs --res fanqie://publish-rules            # 读资源
 > Windows PowerShell 传复杂 JSON 建议用环境变量：
 > `$env:MCP_ARGS='{"book_id":"1234567890"}'; node scripts\mcp-cli.mjs list_chapters_tomato`
 
-### 注册到 WorkBuddy
+### 1.1 注册到 WorkBuddy
 
 `~/.workbuddy/mcp.json` 已加入：
 
@@ -58,7 +58,55 @@ node scripts\mcp-cli.mjs --res fanqie://publish-rules            # 读资源
 
 改完后需在 WorkBuddy 连接器页点「信任」并重启会话。
 
+### 1.2 远程接入（Streamable HTTP）
+
+默认仍是 stdio（本地零改动）。要让别的机器 / 云端 Agent 接入，用 `--http` 或 `FANQIE_TRANSPORT=http` 启动 HTTP 端点：
+
+```powershell
+$token = node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+$env:FANQIE_HTTP_TOKEN = $token        # 必填：Bearer 鉴权
+npm run start:http                     # 等价于 node dist/index.js --http
+```
+
+启动后 stderr 会打印真实端点（`FANQIE_HTTP_PORT=0` 时由系统分配空闲端口）：
+
+```
+远程端点已就绪: http://127.0.0.1:8765/mcp（Bearer 鉴权 / 可写模式）
+```
+
+客户端侧（任何支持 Streamable HTTP 的 MCP 客户端）：
+
+```json
+{
+  "mcpServers": {
+    "fanqie-autopub": {
+      "type": "streamable-http",
+      "url": "http://127.0.0.1:8765/mcp",
+      "headers": { "Authorization": "Bearer <你的 FANQIE_HTTP_TOKEN>" }
+    }
+  }
+}
+```
+
+手动核对（PowerShell）：
+
+```powershell
+Invoke-WebRequest http://127.0.0.1:8765/health -UseBasicParsing   # 探活：{"ok":true,...}
+```
+
+安全约定（**别关掉**）：
+
+| 项 | 行为 |
+|---|---|
+| 监听地址 | 默认 `127.0.0.1`，只对本机开放；`FANQIE_HTTP_HOST=0.0.0.0` 才对外，届时会打印醒目告警 |
+| 鉴权 | 强制 `FANQIE_HTTP_TOKEN`，缺失或短于 16 字符**直接拒绝启动**；比对走常量时间，401 响应带 `WWW-Authenticate` |
+| 只读模式 | `FANQIE_HTTP_READONLY=1`：协议入口拦截全部写工具（`publish_*` / `delete_*` / `save_article` / `export_article` …），只读工具与资源照常 |
+| 传输 | MCP 标准 Streamable HTTP（会话按 `mcp-session-id` 维护），非废弃的 SSE 老协议 |
+
+> 这个端点能驱动真实浏览器改线上内容。要对外暴露请放在反向代理 + HTTPS 之后，并给 Token 加轮换。
+
 ---
+
 
 ## 2. 工具清单（30 个）
 
@@ -161,6 +209,7 @@ node scripts\mcp-cli.mjs --res fanqie://publish-rules            # 读资源
 - **限速与人工确认**：批量上传章节之间有 `interval_seconds` 间隔；发布链路保留人工确认环节，规避平台风控。
 - **实名/人脸验证**：短故事发布可能触发实名/人脸验证；命中时服务会停止并截图提示，**不硬闯**。
 - **失败必有证据**：失败自动截图到 `data/screenshots/`，并在返回里给出路径。
+- **远程端点默认关闭且不裸奔**：只有显式 `--http` / `FANQIE_TRANSPORT=http` 才开；默认只监听 `127.0.0.1`、强制 `FANQIE_HTTP_TOKEN`（Bearer，常量时间比对），并可用 `FANQIE_HTTP_READONLY=1` 在协议入口拦掉所有写工具（见 §1.2）。
 
 ## 5. 已知边界
 
@@ -187,23 +236,35 @@ node scripts\mcp-cli.mjs --res fanqie://publish-rules            # 读资源
 | `FANQIE_CHAPTER_URL_TEMPLATE` | 内置 | 章节发布页地址模板 |
 | `FANQIE_DEBUG` | 关闭 | 设为 `1` 输出调试日志（stderr） |
 
+### 6.1 远程（Streamable HTTP）专用
+
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| `FANQIE_TRANSPORT` | `stdio` | 设为 `http` 启用远程端点（等价于命令行加 `--http`） |
+| `FANQIE_HTTP_TOKEN` | 无（**必填**） | Bearer Token，<16 字符拒绝启动；生成：`node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"` |
+| `FANQIE_HTTP_HOST` | `127.0.0.1` | 监听地址；改成 `0.0.0.0` 即对外暴露（会告警） |
+| `FANQIE_HTTP_PORT` | `8765` | 监听端口；`0` = 由系统分配空闲端口 |
+| `FANQIE_HTTP_PATH` | `/mcp` | MCP 端点路径（`/health` 为免鉴权探活端点） |
+| `FANQIE_HTTP_READONLY` | 关闭 | 设为 `1` 时远程端点拦截全部写工具，只留只读能力 |
+
 ---
 
 ## 7. 目录结构
 
 ```
 src/
-├── index.ts              # MCP 入口（stdio）
+├── index.ts              # MCP 入口（stdio；--http / FANQIE_TRANSPORT=http 走远程）
+├── http.ts               # 远程传输：Streamable HTTP（node:http + Bearer 鉴权 + 只读模式）
 ├── globals.d.ts          # page.evaluate 用到的 DOM 全局声明
 ├── types.ts
-├── core/                 # paths / logger / result / store(原子写) / text(去 markdown)
+├── core/                 # paths / logger / result / store(原子写) / text(去 markdown) / remote(远程配置与写工具判定)
 ├── browser/              # driver(puppeteer-core) / cookies / endpoints(路由与接口常量)
 ├── knowledge/            # genres(赛道知识库) / goldenThree(黄金三章)
 ├── services/             # auth / novel / chapter / short / library / stats / originality
 ├── tools/                # auth / novel / chapter / shortStory / library / knowledge / stats
 └── resources/index.ts
 scripts/
-├── smoke.mjs             # 协议级冒烟（不触网）
+├── smoke.mjs             # 协议级冒烟（不触网）：stdio 30 工具/8 资源 + 远程鉴权/只读模式
 └── mcp-cli.mjs           # 命令行直连 MCP
 data/                     # cookies / articles.json / novels.json / ... / screenshots
 dist/                     # WorkBuddy 实际加载入口（已入库，clone 后可免 build 直接运行）
@@ -219,3 +280,9 @@ dist/                     # WorkBuddy 实际加载入口（已入库，clone 后
 | 找不到本机浏览器 | 设置 `FANQIE_CHROME_PATH`，或 `npm i puppeteer`（自带 Chromium） |
 | 选择器找不到 / 页面改版 | 选择器集中在 `src/browser/endpoints.ts` 与各 `services/*.ts` 顶部，按需补充；失败截图在 `data/screenshots/` |
 | 章节发布后未复核到 | 到后台草稿箱确认；`list_chapters_tomato` 复核已发布数 |
+| 远程启动即退出，报 `必须设置 FANQIE_HTTP_TOKEN` | 按 §1.1 生成并导出 Token（<16 字符也会被拒） |
+| 远程客户端 401 | 请求头缺 `Authorization: Bearer <Token>`，或 Token 不匹配 |
+| 远程客户端 404 | 路径不是 `FANQIE_HTTP_PATH`（默认 `/mcp`；探活是 `/health`） |
+| 远程调用写工具报「只读模式」 | 服务端设了 `FANQIE_HTTP_READONLY=1`，按需去掉（本地 stdio 不受此开关影响） |
+| 远程客户端初始化报 400 / 404 会话过期 | Streamable HTTP 会话在服务端内存里，重启服务后客户端需重连 |
+| `FANQIE_HTTP_PORT` 被占用 | 改端口，或设 `FANQIE_HTTP_PORT=0` 让系统分配 |

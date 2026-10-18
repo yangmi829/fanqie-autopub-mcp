@@ -1,15 +1,15 @@
 # AGENTS.md
 
-番茄小说（fanqienovel.com）作者后台自动发布 MCP 服务：TypeScript + stdio，30 个工具 + 8 个只读资源。
+番茄小说（fanqienovel.com）作者后台自动发布 MCP 服务：TypeScript，传输为 stdio（默认）/ Streamable HTTP（远程），30 个工具 + 8 个只读资源。
 用户侧用法见 `README.md`；**本文件只写"改这个仓库时必须知道的"**。
 
 ## 命令
 - `npm install` → `npm run build`（tsc → `dist/`）→ `npm run smoke`
-- `npm run smoke` 是本仓库**唯一自动化验证**：以 stdio 拉起 `dist/index.js`，走真实 MCP 协议断言 30 工具 / 8 资源 / 本地工具调用，**不触网**（用临时 `FANQIE_DATA_DIR` + `FANQIE_ENABLE_BROWSER=0`）。exit 0 = 全绿。
+- `npm run smoke` 是本仓库**唯一自动化验证**：以 stdio 拉起 `dist/index.js`，走真实 MCP 协议断言 30 工具 / 8 资源 / 本地工具调用；再以 `--http` 拉起独立进程验证远程链路（端点通告 / 401 / 30 工具 / 写工具 / `FANQIE_HTTP_READONLY=1` 拦截）。**全程不触网**（临时 `FANQIE_DATA_DIR` + `FANQIE_ENABLE_BROWSER=0`，远程用 `FANQIE_HTTP_PORT=0` 由系统分配端口）。exit 0 = 全绿。
 - **增删工具或资源后，必须同步更新 `scripts/smoke.mjs` 里的 `EXPECTED_TOOLS` / `EXPECTED_RESOURCES`**，否则冒烟会失败。
 - 没有测试框架（无 jest/vitest），不要去找。
 - 直连 MCP 调试：`node scripts/mcp-cli.mjs --list` / `node scripts/mcp-cli.mjs <tool> key=value` / `--res <uri>`
-- 运行服务：`npm start`
+- 运行服务：`npm start`（stdio）/ `npm run start:http`（远程，需 `FANQIE_HTTP_TOKEN`）
 
 ## 提交前必须知道
 - **`dist/` 特意入库**（clone 后免 build 即可运行）。改了 `src/` 就必须 `npm run build`，并把新的 `dist/` 一起提交，否则运行的是旧产物。
@@ -33,11 +33,13 @@
 10. **`data/` 里有有效登录 cookies，绝不能提交**（`.gitignore` 用 `data/*` + `!data/.gitkeep`）。
 11. **作品信息页不是弹窗，标签选择是二级弹窗**（2026-10 实测）：`book-info/{id}?type=1` 点 `button.create-btn`（文字「修改」）展开的是**页面内联表单**（底部才有「立即修改」）；点标签行（`#selectRow` 阅读 / `#activitySelectRow` 内容）才会弹**独立分类弹窗** `.arco-modal.category-modal`（选项 `.category-choose-item`，`active`=已选，按钮「取消/确认」）。坑：① 弹窗容器一出现就带 `zoomModal-appear` 动画类，**选项是延迟渲染的**，必须等到选项数 > 0 再点，否则全部判为「未找到」；② DOM 里可能同时存在多个 `.arco-modal`，必须**按弹窗标题**（`阅读标签`/`内容标签`）定位，不能取「第一个可见」；③ 点选项后必须点弹窗「确认」才落到表单（点「取消」丢弃）——但**「确认」≠ 提交**，已验证点完「确认」不点「立即修改」线上不变。
 12. **微头条不是短故事编辑页里的东西**（2026-10 实测）：入口是「作品管理 → 短篇作品 → **作品推荐**」=`/main/writer/short-recommend`（另见 `/main/writer/short-recommend-draft` 草稿箱）。API 前缀 `short_article/wtt_*`：`wtt_list` / `wtt_draft_list` / `card_list` 是**只读**（`card_list` 是 POST 但免签名，走 `endpoints.ts` 的 `apiPostQuery`），`publish_wtt` / `delete_wtt` 是**写**→ 必须点页面按钮。编辑器是右侧抽屉：正文 `textarea`（默认值 `#故事推荐#`）+「添加图片」+「添加短篇」（弹 `.arco-modal.short-modal`「插入短篇」，点 `.short-select-item` → `.short-select-item-selected` → 「确定」）。前端硬门（只弹提示，不报错）：正文 <10 或 >1500 字、未选短篇。改版只改 `services/microHeadline.ts` 顶部的 `MICRO_SELECTORS`。
+13. **远程传输（Streamable HTTP）的安全红线**：① 只有显式 `--http` / `FANQIE_TRANSPORT=http` 才开，stdio 默认路径**不许**引入 http 相关副作用（`src/index.ts` 用动态 `import("./http.js")`，别改成顶层 import）；② **没有 `FANQIE_HTTP_TOKEN` 必须拒绝启动**（宁可起不来也不能裸奔暴露写权限），Token 比对用 `crypto.timingSafeEqual`（哈希后比，避免长度泄漏）；③ 默认只监听 `127.0.0.1`，绑非回环要告警；④ 新增写工具时**必须**确认 `core/remote.ts` 的 `isWriteTool()` 能判到它（显式名单 + 前缀正则兜底），否则 `FANQIE_HTTP_READONLY=1` 会漏；⑤ 只读拦截做在 HTTP 协议入口（`tools/call` 的 `params.name`），不改 `buildServer()`，因为 stdio 本地用法要保持全功能；⑥ `/health` 是唯一免鉴权端点，只许回最小信息，别往里塞 cookies / 路径等敏感内容；⑦ 启动日志里的 `远程端点已就绪: http://…` 一行是 `scripts/smoke.mjs` 的解析锚点，改文案要同步改冒烟正则。
 
 ## 架构
 - 分层：`services/*`（业务 + 浏览器驱动，统一返回 `{ ok, message, ... }`）→ `tools/*`（薄 MCP 包装，用 `core/result.ts` 的 `fromService()` 转 MCP 结果）→ `resources/*`（只读、不联网）。
 - 改行为优先落在 `services/`；`tools/` 只做参数解析与转发。
-- 入口 `src/index.ts`：`buildServer()` 注册全部工具与资源后接 `StdioServerTransport`；传 `--selfcheck` 只打印环境自检后退出。
+- 入口 `src/index.ts`：`buildServer()` 注册全部工具与资源后接 `StdioServerTransport`；传 `--selfcheck` 只打印环境自检后退出；`--http` / `FANQIE_TRANSPORT=http` 时动态 import `src/http.ts` 起 Streamable HTTP 端点（同一份 `buildServer()`，会话按 `mcp-session-id` 管理）。
+- 远程相关：`core/remote.ts`（纯配置解析 + 写工具判定，不 import SDK / http）+ `http.ts`（node:http 手写路由、Bearer 鉴权、只读拦截、信号优雅关闭），不引入 express。
 - SDK 用法：`server.registerTool(name, { description, inputSchema: { ...zodRawShape } }, handler)`（MCP SDK 1.x + zod v4）。
 - 存储：`core/store.ts` 的 `Collection<T>`（JSON 原子写 tmp → rename），集合为 `novels` / `shortStories` / `articles` / `tasks`。
 - 纯本地能力不碰浏览器：知识数据在 `knowledge/`（`list_genres` + 两个资源），检测算法在 `services/originality.ts`（`check_originality`）。

@@ -459,3 +459,36 @@ create_short_story_tomato(confirm=false) → 校验字数(6000–80000) → 预�
 - 测试账号已有 1 条微头条（10-18 01:37，状态「小流量推荐」）；注意其 `card_book_id=7697677022889348120` **与 `item_id=7697662166328951320` 不同** → 选卡片时**按标题匹配**，不能按 id 匹配。
 
 **工具数** 28 → 30（`+create_micro_headline_tomato` `+list_micro_headlines_tomato`）。**仍未做（有意）**：`delete_micro_headline_tomato`；**未做真实发布验证**（`confirm=true` 会产生线上公开内容，需用户确认后执行）。
+
+---
+
+## 15. 远程接入：Streamable HTTP 传输（2026-10-18）
+
+**需求**：MCP 项目支持远程 —— 让本机之外（局域网 / 云端 Agent）也能接入这个服务。
+
+### 拍板结论（与用户确认）
+- 传输用 **Streamable HTTP**（MCP 2025-03-26 起标准），**不做**已废弃的 HTTP+SSE 老协议。理由：老协议是过渡方案，多数客户端已支持新标准；同时挂两套端点会成倍增加维护面。
+- 安全默认：**强制 Bearer Token + 默认只监听 `127.0.0.1`**，另提供 `FANQIE_HTTP_READONLY=1` 只读模式。理由：这服务能驱动真实浏览器改线上正文，裸奔的 HTTP 端点等于把作者后台整个交出去。
+
+### 实现
+- `src/core/remote.ts`（新增，**不 import SDK / node:http**）：`remoteRequested()`、`remoteOptions()`（缺 Token 或 <16 字符直接抛错）、`isLoopback()`、`isWriteTool()`（显式 19 个写工具名单 + `^(login|set|create|update|add|save|delete|publish|batch|import)_` 前缀正则兜底）、`describeRemote()`（给 `--selfcheck`）。
+- `src/http.ts`（新增）：`node:http` 手写路由，不引入 express。
+  - `POST {path}`：解析 JSON 体 → 只读模式先在协议入口拦 `tools/call` 的写工具（`403` + `-32003`）→ 按 `mcp-session-id` 复用一个 `StreamableHTTPServerTransport`，无会话且是 `initialize` 才新建（stateful，每会话一个 `Server`，避免请求 ID 串号）。
+  - `GET/DELETE {path}`：SSE 流 / 会话销毁，缺有效会话返回 `400`。
+  - `GET /health` `/healthz`：**唯一免鉴权端点**，只回 `{ok,name,version,transport,readonly}`。
+  - 鉴权：`Authorization: Bearer <token>`，两侧 sha256 后 `timingSafeEqual`（不泄漏 Token 长度 / 前缀）；失败 `401` + `WWW-Authenticate`。
+  - 请求体上限 8MB；日志仍走 stderr；`SIGINT/SIGTERM` 优雅关闭（先关会话再关 server，兜底 3s 强制退出）。
+  - 启动打印 `远程端点已就绪: http://host:port/path（Bearer 鉴权 / 可写模式）`，是 `scripts/smoke.mjs` 的解析锚点。
+- `src/index.ts`：`--http` / `FANQIE_TRANSPORT=http` 时**动态** `import("./http.js")`，复用同一个 `buildServer()`；stdio 仍是默认分支（不加任何 http 相关副作用）。`--selfcheck` 输出追加 `remote` 段。
+- `package.json`：新增 `start:http`；`.env.example` / `README.md`（§1.2 + §6.1 + §8）/ `AGENTS.md`（硬约束 13）同步。
+
+### 为什么这样取舍
+- **拦截做在 HTTP 协议入口，不改 `buildServer()`**：只读是「远程暴露」的风险控制，本地 stdio（WorkBuddy）应保持全功能；也不去改 8 个 `registerXxxTools` 的签名。
+- **不引入 express / cors / helmet**：SDK 自带 `StreamableHTTPServerTransport`，`node:http` 足够；少一个依赖少一份供应链风险。
+- **会话不做无状态**：本服务是「本机浏览器 + 本地 JSON」，没有 serverless 场景，stateful 更贴近官方示例、也便于按会话关闭。
+- **不做 OAuth / 多用户**：单机单用户的作者后台自动化，Token 就够；多租户不在目标内。
+
+### 验证
+- `npm run build` 0 错；`npm run smoke` **全绿**，远程阶段断言：端点通告 / `/health` 免鉴权 200 / 无 Token `401` / 远程真协议列出 30 工具 / 远程可调用只读与写工具 / `FANQIE_HTTP_READONLY=1` 时 8 个写工具（含 `login_tomato`、`publish_short_story_tomato`、`export_article`）全部被 `403` 拦截、只读工具照常。
+- 手动验证：无 `FANQIE_HTTP_TOKEN` 启动 exit 1 并给出生成命令；`FANQIE_HTTP_TOKEN=short` exit 1；`FANQIE_TRANSPORT=http FANQIE_HTTP_PORT=0` 能通告真实端口。
+- 全程**未触网**：远程冒烟用临时数据目录 + `FANQIE_ENABLE_BROWSER=0`，写工具即使漏拦也只会报「浏览器能力已关闭」。

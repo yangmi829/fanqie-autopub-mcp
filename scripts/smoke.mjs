@@ -1,12 +1,15 @@
 /**
  * 协议级冒烟测试（不触网）：
  * 以 stdio 方式拉起 dist/index.js，走真实 MCP 协议列出工具/资源，
- * 并调用若干个纯本地（不联网）工具验证返回结构。
+ * 并调用若干个纯本地（不联网）工具验证返回结构；
+ * 最后再以远程方式（Streamable HTTP）拉一次，验证鉴权 / 只读模式 / 远程调用链路。
  *
  * 使用临时数据目录，避免污染真实 data/。
  */
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { spawn } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
 import fs from "node:fs";
@@ -98,6 +101,7 @@ const EXPECTED_RESOURCES = [
 ];
 
 let failures = 0;
+const httpChildren = [];
 function check(name, cond, extra = "") {
   const mark = cond ? "PASS" : "FAIL";
   if (!cond) failures++;
@@ -225,11 +229,133 @@ try {
   const goldenRes = await client.readResource({ uri: "fanqie://golden-three-chapters" });
   check("golden-three 资源为 markdown", genresBody.length > 0 && /黄金三章/.test(goldenRes.contents[0].text));
 
+  /* ------------------------------ 5) 远程传输（Streamable HTTP） ------------------------------ */
+  const HTTP_TOKEN = "smoke-token-0123456789abcdef";
+  const TMP_HTTP = path.join(TMP, "http-data");
+  fs.mkdirSync(TMP_HTTP, { recursive: true });
+
+  /** 以 --http 拉起一个独立进程（端口 0 = 系统分配），从 stderr 解析真实端点 */
+  async function startHttpServer(extraEnv = {}) {
+    const child = spawn(process.execPath, [path.join(ROOT, "dist", "index.js"), "--http"], {
+      env: {
+        ...process.env,
+        FANQIE_DATA_DIR: TMP_HTTP,
+        FANQIE_ENABLE_BROWSER: "0",
+        FANQIE_HTTP_TOKEN: HTTP_TOKEN,
+        FANQIE_HTTP_PORT: "0",
+        ...extraEnv,
+      },
+      stdio: ["ignore", "ignore", "pipe"],
+    });
+    httpChildren.push(child);
+
+    let stderr = "";
+    child.stderr.on("data", (b) => {
+      stderr += b.toString("utf-8");
+    });
+
+    const url = await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        clearInterval(poll);
+        reject(new Error(`远程端点 15s 内未就绪。stderr:\n${stderr}`));
+      }, 15000);
+      const poll = setInterval(() => {
+        const m = /远程端点已就绪: (http:\/\/[^\s（]+)/.exec(stderr);
+        if (m) {
+          clearInterval(poll);
+          clearTimeout(timer);
+          resolve(m[1]);
+        }
+      }, 50);
+      child.once("exit", (code) => {
+        clearInterval(poll);
+        clearTimeout(timer);
+        reject(new Error(`远程进程提前退出 code=${code}。stderr:\n${stderr}`));
+      });
+    });
+
+    return { child, url, stderr: () => stderr };
+  }
+
+  async function connectHttp(url) {
+    const c = new Client({ name: "smoke-http", version: "0.0.0" });
+    const t = new StreamableHTTPClientTransport(new URL(url), {
+      requestInit: { headers: { Authorization: `Bearer ${HTTP_TOKEN}` } },
+    });
+    await c.connect(t);
+    return c;
+  }
+
+  try {
+    const srv = await startHttpServer();
+    check("远程(--http) 启动并通告端点", /^http:\/\/127\.0\.0\.1:\d+\/mcp$/.test(srv.url), srv.url);
+
+    const health = await fetch(new URL("/health", srv.url));
+    const healthBody = await health.json().catch(() => ({}));
+    check("远程 /health 免鉴权可探活", health.status === 200 && healthBody.ok === true);
+
+    const noToken = await fetch(srv.url, {
+      method: "POST",
+      headers: { "content-type": "application/json", accept: "application/json, text/event-stream" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
+    });
+    check("远程 无 Token 被拒（401）", noToken.status === 401, `status=${noToken.status}`);
+
+    const httpClient = await connectHttp(srv.url);
+    const httpTools = await httpClient.listTools();
+    check("远程 走真协议列出 30 个工具", httpTools.tools.length === 30, `实际=${httpTools.tools.length}`);
+
+    let hr = parse(await httpClient.callTool({ name: "get_stats", arguments: { remote: false } }));
+    check("远程 可调用只读工具", typeof hr?.local?.articles?.total === "number");
+
+    hr = parse(await httpClient.callTool({ name: "save_article", arguments: { kind: "chapter", title: "远程冒烟", content: "远程写入。" } }));
+    check("远程 带 Token 可调用写工具", typeof hr?.article?.id === "string");
+    await httpClient.close();
+    srv.child.kill();
+
+    // 只读模式（FANQIE_HTTP_READONLY=1）：写工具一律拦在协议入口，只读工具照常
+    const ro = await startHttpServer({ FANQIE_HTTP_READONLY: "1" });
+    const roClient = await connectHttp(ro.url);
+    const roTools = await roClient.listTools();
+    check("远程[只读] 工具清单不变（30）", roTools.tools.length === 30, `实际=${roTools.tools.length}`);
+
+    const roStats = parse(await roClient.callTool({ name: "get_stats", arguments: { remote: false } }));
+    check("远程[只读] 只读工具照常可用", typeof roStats?.local?.articles?.total === "number");
+
+    // 浏览器已用 FANQIE_ENABLE_BROWSER=0 关闭，即使漏拦也只会报「浏览器能力已关闭」，不会触网
+    const readonlyBlocked = [
+      "save_article",
+      "delete_article",
+      "export_article",
+      "update_novel",
+      "import_articles_from_dir",
+      "publish_short_story_tomato",
+      "add_chapter_tomato",
+      "login_tomato",
+    ];
+    for (const name of readonlyBlocked) {
+      let detail = "未被拦截（写操作会真的执行）";
+      let blocked = false;
+      try {
+        await roClient.callTool({ name, arguments: {} });
+      } catch (e) {
+        detail = String(e?.message ?? e).slice(0, 140);
+        blocked = /只读模式/.test(detail);
+      }
+      check(`远程[只读] 拦截写工具: ${name}`, blocked, detail);
+    }
+    await roClient.close();
+    ro.child.kill();
+  } catch (e) {
+    check("远程传输冒烟（阶段整体）", false, String(e?.message ?? e));
+  }
+
   console.log(`\n===== 冒烟结果：${failures === 0 ? "全绿 ✅" : failures + " 项失败 ❌"} =====`);
 } catch (e) {
   failures++;
   console.error("冒烟执行异常：", e);
 } finally {
+  for (const c of httpChildren) c.kill();
   await client.close().catch(() => {});
   fs.rmSync(TMP, { recursive: true, force: true });
 }
