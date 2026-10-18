@@ -3,8 +3,8 @@
  *
  * 设计取舍：
  * - 用 node:http 手写路由，不引入 express（本仓库一贯零额外依赖）。
- * - 默认只监听回环地址 + 强制 Bearer 鉴权：这个服务能驱动真实浏览器改线上内容，
- *   裸奔的 HTTP 端点等于把作者后台交出去。
+ * - 默认只监听回环地址；**回环地址免鉴权**（本机免配置），一旦绑非回环地址则强制 Bearer Token，
+ *   否则拒绝启动——这个服务能驱动真实浏览器改线上内容，裸奔的对外端点等于把作者后台交出去。
  * - 会话按 mcp-session-id 维护，与 SDK 官方 stateful 示例一致。
  * - 日志仍走 stderr（core/logger.ts）；HTTP 模式下 stdout 不被占用，但保持一致。
  */
@@ -48,7 +48,8 @@ export async function startRemoteServer(makeServer: ServerFactory, info: RemoteS
       return sendJson(res, 404, { error: `未知路径 ${url.pathname}；MCP 端点是 ${opts.path}（探活：/health）` });
     }
 
-    if (!authorized(req.headers.authorization, opts.token)) {
+    // 没配 Token ＝ 本机免鉴权模式（remoteOptions() 已保证这种情况只可能是回环地址）
+    if (opts.token && !authorized(req.headers.authorization, opts.token)) {
       res.setHeader("WWW-Authenticate", 'Bearer realm="fanqie-autopub-mcp"');
       return sendJson(res, 401, rpcError(null, -32001, "未授权：请求头需要 Authorization: Bearer <FANQIE_HTTP_TOKEN>"));
     }
@@ -99,7 +100,16 @@ export async function startRemoteServer(makeServer: ServerFactory, info: RemoteS
   const shownHost = opts.host === "0.0.0.0" || opts.host === "::" ? "127.0.0.1" : opts.host;
 
   // 冒烟测试按这一行解析实际端口（端口传 0 时由系统分配），改动请同步 scripts/smoke.mjs
-  logger.info(`远程端点已就绪: http://${shownHost}:${port}${opts.path}（Bearer 鉴权 / ${opts.readonly ? "只读模式" : "可写模式"}）`);
+  logger.info(
+    `远程端点已就绪: http://${shownHost}:${port}${opts.path}（${opts.token ? "Bearer 鉴权" : "本机免鉴权"} / ${
+      opts.readonly ? "只读模式" : "可写模式"
+    }）`
+  );
+  if (!opts.token) {
+    logger.warn(
+      `本机免鉴权模式（FANQIE_HTTP_HOST=${opts.host}）：同机任何进程都能调用该端点（含写工具）。不要改绑非回环地址——那会因缺 Token 直接拒绝启动。`
+    );
+  }
   if (!isLoopback(opts.host)) {
     logger.warn(
       `已绑定非回环地址 ${opts.host}：该端点能驱动真实浏览器执行写操作，请确保 FANQIE_HTTP_TOKEN 足够强，并置于反向代理 / 防火墙之后。`

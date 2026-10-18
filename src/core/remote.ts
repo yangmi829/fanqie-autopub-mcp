@@ -20,8 +20,10 @@ export interface RemoteOptions {
   port: number;
   /** MCP 端点的 HTTP 路径，形如 /mcp */
   path: string;
-  /** Bearer Token；远程模式必填 */
-  token: string;
+  /** Bearer Token；回环地址可省略（＝本机免鉴权），非回环地址必填 */
+  token: string | null;
+  /** 是否要求 Bearer 鉴权（有 Token 即要求） */
+  authRequired: boolean;
   /** 只读模式：拦截写工具（本地 stdio 不受影响） */
   readonly: boolean;
 }
@@ -32,28 +34,39 @@ export function remoteRequested(argv: string[] = process.argv): boolean {
   return (process.env.FANQIE_TRANSPORT ?? "").trim().toLowerCase() === "http";
 }
 
-/** 解析远程配置；缺 Token 直接抛错（宁可起不来，也不要裸奔暴露写权限） */
+/**
+ * 解析远程配置。
+ *
+ * 鉴权规则：**回环地址（127.0.0.1 / localhost / ::1）可以不设 Token，本机免鉴权**；
+ * 一旦绑定非回环地址（0.0.0.0 等），必须设 Token，否则直接拒绝启动——
+ * 这个端点能驱动真实浏览器改线上正文，不能裸奔对局域网 / 公网开放。
+ */
 export function remoteOptions(): RemoteOptions {
+  const host = (process.env.FANQIE_HTTP_HOST ?? "").trim() || DEFAULT_HOST;
   const token = (process.env.FANQIE_HTTP_TOKEN ?? "").trim();
-  if (!token) {
-    throw new Error(
-      "远程模式必须设置 FANQIE_HTTP_TOKEN（Bearer 鉴权）。生成一个强随机 Token：\n" +
-        '  node -e "console.log(require(\'crypto\').randomBytes(32).toString(\'hex\'))"'
-    );
-  }
-  if (token.length < 16) {
+
+  if (token && token.length < 16) {
     throw new Error(`FANQIE_HTTP_TOKEN 太短（当前 ${token.length} 字符）：远程端点可驱动真实浏览器写入，请至少 16 字符的随机串。`);
+  }
+  if (!token && !isLoopback(host)) {
+    throw new Error(
+      `绑定非回环地址 ${host} 时必须设置 FANQIE_HTTP_TOKEN（Bearer 鉴权）。\n` +
+        "  只在本机使用的话：把 FANQIE_HTTP_HOST 设为 127.0.0.1（回环地址免鉴权），或删掉该变量。\n" +
+        "  要对外暴露（反向代理 / 内网共享）则生成一个强随机 Token：\n" +
+        '    node -e "console.log(require(\'crypto\').randomBytes(32).toString(\'hex\'))"'
+    );
   }
 
   const rawPath = (process.env.FANQIE_HTTP_PATH ?? "").trim() || DEFAULT_PATH;
   const parsedPort = Number.parseInt(process.env.FANQIE_HTTP_PORT ?? "", 10);
 
   return {
-    host: (process.env.FANQIE_HTTP_HOST ?? "").trim() || DEFAULT_HOST,
+    host,
     // 0 表示由系统分配空闲端口（冒烟测试用）
     port: Number.isInteger(parsedPort) && parsedPort >= 0 && parsedPort <= 65535 ? parsedPort : DEFAULT_PORT,
     path: rawPath.startsWith("/") ? rawPath : `/${rawPath}`,
-    token,
+    token: token || null,
+    authRequired: Boolean(token),
     readonly: truthy(process.env.FANQIE_HTTP_READONLY),
   };
 }
@@ -113,6 +126,8 @@ export function describeRemote(): Record<string, unknown> {
     path: parsed?.path ?? process.env.FANQIE_HTTP_PATH ?? DEFAULT_PATH,
     readonly: parsed?.readonly ?? truthy(process.env.FANQIE_HTTP_READONLY),
     token_set: Boolean(parsed?.token),
+    /** none = 回环地址且没设 Token（本机免鉴权）；bearer = 请求需带 Authorization */
+    auth_mode: parsed ? (parsed.authRequired ? "bearer" : "none") : null,
     error: error ?? null,
   };
 }

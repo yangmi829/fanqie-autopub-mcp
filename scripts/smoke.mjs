@@ -242,6 +242,7 @@ try {
         FANQIE_DATA_DIR: TMP_HTTP,
         FANQIE_ENABLE_BROWSER: "0",
         FANQIE_HTTP_TOKEN: HTTP_TOKEN,
+        FANQIE_HTTP_HOST: "127.0.0.1",
         FANQIE_HTTP_PORT: "0",
         ...extraEnv,
       },
@@ -277,13 +278,43 @@ try {
     return { child, url, stderr: () => stderr };
   }
 
-  async function connectHttp(url) {
+  async function connectHttp(url, token = HTTP_TOKEN) {
     const c = new Client({ name: "smoke-http", version: "0.0.0" });
     const t = new StreamableHTTPClientTransport(new URL(url), {
-      requestInit: { headers: { Authorization: `Bearer ${HTTP_TOKEN}` } },
+      requestInit: { headers: token ? { Authorization: `Bearer ${token}` } : {} },
     });
     await c.connect(t);
     return c;
+  }
+
+  /** 拉起一个应当「启动即退出」的远程进程（用于验证拒绝启动的分支），只读 stderr 与退出码 */
+  function runToExit(extraEnv = {}) {
+    return new Promise((resolve) => {
+      const child = spawn(process.execPath, [path.join(ROOT, "dist", "index.js"), "--http"], {
+        env: {
+          ...process.env,
+          FANQIE_DATA_DIR: TMP_HTTP,
+          FANQIE_ENABLE_BROWSER: "0",
+          FANQIE_HTTP_HOST: "127.0.0.1",
+          FANQIE_HTTP_PORT: "0",
+          ...extraEnv,
+        },
+        stdio: ["ignore", "ignore", "pipe"],
+      });
+      httpChildren.push(child);
+      let stderr = "";
+      child.stderr.on("data", (b) => {
+        stderr += b.toString("utf-8");
+      });
+      const timer = setTimeout(() => {
+        child.kill();
+        resolve({ code: -1, stderr: stderr + "\n（10s 未退出，已强杀）" });
+      }, 10000);
+      child.once("exit", (code) => {
+        clearTimeout(timer);
+        resolve({ code, stderr });
+      });
+    });
   }
 
   try {
@@ -299,7 +330,7 @@ try {
       headers: { "content-type": "application/json", accept: "application/json, text/event-stream" },
       body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
     });
-    check("远程 无 Token 被拒（401）", noToken.status === 401, `status=${noToken.status}`);
+    check("远程 配了 Token 时无 Token 请求被拒（401）", noToken.status === 401, `status=${noToken.status}`);
 
     const httpClient = await connectHttp(srv.url);
     const httpTools = await httpClient.listTools();
@@ -346,6 +377,34 @@ try {
     }
     await roClient.close();
     ro.child.kill();
+
+    // 本机免鉴权（回环地址 + 不设 FANQIE_HTTP_TOKEN）：不再要求 Authorization
+    const open = await startHttpServer({ FANQIE_HTTP_TOKEN: "" });
+    check("远程[免鉴权] 启动并通告端点", /^http:\/\/127\.0\.0\.1:\d+\/mcp$/.test(open.url), open.url);
+    check("远程[免鉴权] 启动日志标明「本机免鉴权」", /本机免鉴权/.test(open.stderr()), "");
+
+    const openHealth = await fetch(new URL("/health", open.url));
+    check("远程[免鉴权] /health 可探活", openHealth.status === 200);
+
+    const openClient = await connectHttp(open.url, null);
+    const openTools = await openClient.listTools();
+    check("远程[免鉴权] 不带 Authorization 也列出 30 个工具", openTools.tools.length === 30, `实际=${openTools.tools.length}`);
+    const openStats = parse(await openClient.callTool({ name: "get_stats", arguments: { remote: false } }));
+    check("远程[免鉴权] 不带 Authorization 可调用工具", typeof openStats?.local?.articles?.total === "number");
+    await openClient.close();
+    open.child.kill();
+
+    // 拒绝启动的分支：非回环地址无 Token / Token 太短
+    const exposed = await runToExit({ FANQIE_HTTP_TOKEN: "", FANQIE_HTTP_HOST: "0.0.0.0" });
+    check("远程[无 Token + 非回环] 拒绝启动", exposed.code !== 0, `code=${exposed.code}`);
+    check(
+      "远程[无 Token + 非回环] 提示改回环或补 Token",
+      /非回环地址/.test(exposed.stderr) && /FANQIE_HTTP_TOKEN/.test(exposed.stderr),
+      ""
+    );
+
+    const weak = await runToExit({ FANQIE_HTTP_TOKEN: "short" });
+    check("远程[Token 太短] 拒绝启动", weak.code !== 0 && /太短/.test(weak.stderr), `code=${weak.code}`);
   } catch (e) {
     check("远程传输冒烟（阶段整体）", false, String(e?.message ?? e));
   }
