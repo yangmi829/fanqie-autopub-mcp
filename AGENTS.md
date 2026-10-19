@@ -53,7 +53,7 @@
 - 入口 `src/index.ts`：`buildServer()` 注册全部工具与资源后接 `StdioServerTransport`；传 `--selfcheck` 只打印环境自检后退出；`--http` / `FANQIE_TRANSPORT=http` 时动态 import `src/http.ts` 起 Streamable HTTP 端点（同一份 `buildServer()`，会话按 `mcp-session-id` 管理）。
 - 远程相关：`core/remote.ts`（纯配置解析 + 写工具判定，不 import SDK / http）+ `http.ts`（node:http 手写路由、Bearer 鉴权、只读拦截、信号优雅关闭），不引入 express。
 - SDK 用法：`server.registerTool(name, { description, inputSchema: { ...zodRawShape } }, handler)`（MCP SDK 1.x + zod v4）。
-- 存储：`core/store.ts` 的 `Collection<T>`（JSON 原子写 tmp → rename），集合为 `novels` / `shortStories` / `articles` / `tasks`。⚠️ 用 `publish_short_story_tomato(item_id=…)` 发布**不会**回写 `articles.json` 的 `status`（实测仍是 `draft`）——确认发布成功后要顺手 `save_article(article_id=…, status="published")` 同步，否则本地库与平台状态长期不一致。
+- 存储：`core/store.ts` 的 `Collection<T>`（JSON 原子写 tmp → rename），集合为 `novels` / `shortStories` / `articles` / `tasks`。⚠️ `publish_short_story_tomato` 发布成功后会**自动回写** `articles.json`（`status=published` + `tomatoItemId`/`tomatoBookId`），匹配顺序 `article_id` → `tomato_item_id` → 标题精确匹配（仅 `kind=short`）；匹配不到会在返回的 `warnings` 里明确说明并给出 `localArticle.otherCandidates`，**绝不静默**（历史数据仍不一致时可手动 `save_article(article_id=…, status="published")` 兜底）。
 - 纯本地能力不碰浏览器：知识数据在 `knowledge/`（`list_genres` + 两个资源），检测算法在 `services/originality.ts`（`check_originality`）。
 - 背景与决策记录见 `docs/PLAN.md`。
 

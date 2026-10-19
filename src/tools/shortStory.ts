@@ -14,10 +14,18 @@ import {
   SHORT_MAX_WORDS,
 } from "../services/short.js";
 import { articles, nowIso } from "../core/store.js";
-import { resolveContent } from "../services/library.js";
+import { logger } from "../core/logger.js";
+import { resolveContent, syncArticleAfterPublish } from "../services/library.js";
 import { buildMicroHeadlineDraft, WTT_DAILY_LIMIT } from "../services/microHeadline.js";
 
 const categoryShape = z.array(z.string()).optional().describe("作品分类名称（如 婚姻家庭/现言甜宠），主分类必选，最多 8 个");
+const mainCategoryShape = z
+  .string()
+  .optional()
+  .describe(
+    "主分类名称（必须取自平台「主分类」组，如 女生生活/男生生活）。发布时主分类必选；" +
+      "传了它就会自动并进 categories；不传则要求 categories 里自带主分类组的名字，否则发布被拒并返回可选值。"
+  );
 
 /** article_id / file_path / content 三选一取正文 */
 async function pickContent(args: { content?: string; file_path?: string; article_id?: string }): Promise<string> {
@@ -108,6 +116,7 @@ export function registerShortStoryTools(server: McpServer): void {
         file_path: z.string().optional().describe("正文文件路径（UTF-8 文本）"),
         article_id: z.string().optional().describe("本地文稿库 article_id（优先）"),
         categories: categoryShape,
+        main_category: mainCategoryShape,
         cover_path: z.string().optional().describe("本地封面图片路径（可选）"),
         use_ai: z.boolean().optional().describe("是否使用AI（发布信息项）"),
         divided_chapters: z.boolean().optional().describe("是否使用「分章」（对应 story_origin_divided_chapters）"),
@@ -126,15 +135,17 @@ export function registerShortStoryTools(server: McpServer): void {
         title: args.title,
         content,
         categories: args.categories,
+        mainCategory: args.main_category,
         coverPath: args.cover_path,
         useAI: args.use_ai,
         dividedChapters: args.divided_chapters,
         confirm: args.confirm,
         headless: args.headless,
       });
-      if (args.article_id && r.itemId && (r.action === "draft-saved" || r.action === "published")) {
+      // 只「存草稿」的路径**不能**标 published（历史上这里误标过，会让本地库谎报已发布）。
+      // 发布必须走 publish_short_story_tomato，那里有 publish_status 复核 + 回写。
+      if (args.article_id && r.itemId) {
         await articles.update(args.article_id, {
-          status: "published",
           tomatoItemId: r.itemId,
           lastMessage: r.message,
           updatedAt: nowIso(),
@@ -161,6 +172,7 @@ export function registerShortStoryTools(server: McpServer): void {
         file_path: z.string().optional().describe("正文文件路径（UTF-8 文本）"),
         article_id: z.string().optional().describe("本地文稿库 article_id（优先于 file_path/content）"),
         categories: categoryShape,
+        main_category: mainCategoryShape,
         cover_path: z.string().optional().describe("本地封面图片路径（可选）"),
         use_ai: z.boolean().optional().describe("是否使用AI（不给＝不改）"),
         confirm: z.boolean().optional().describe("是否真正保存修改，默认 false（只读预览）"),
@@ -181,6 +193,7 @@ export function registerShortStoryTools(server: McpServer): void {
         title: args.title,
         content,
         categories: args.categories,
+        mainCategory: args.main_category,
         coverPath: args.cover_path,
         useAI: args.use_ai,
         confirm: args.confirm,
@@ -207,7 +220,10 @@ export function registerShortStoryTools(server: McpServer): void {
         `⚠️ 平台强制三个必填项（缺一个「下一步」只会弹 3 秒即消失的 toast）：` +
         `① 封面（传 cover_path，或该草稿/作品已有封面）；② use_ai=true|false（发布必须显式声明，工具不替你猜）；` +
         `③ 发布协议（自动勾）+ 试读比例（自动点「去设置」落一条 30% 试读线）。` +
-        `发布后按 edit/v1 的 publish_status=1 复核。若命中实名/人脸验证会停止并提示人工完成。字数需在 ${SHORT_MIN_WORDS}–${SHORT_MAX_WORDS}。` +
+        `④ 分类：平台是「主分类 + 附加分类」，**主分类必选**——传 categories 时请把主分类组的名字一起给（或用 main_category），` +
+        `否则本工具会在点「下一步」前直接返回错误并列出主分类可选值（不会干等弹窗超时）。` +
+        `发布后按 edit/v1 的 publish_status=1 复核，并**回写本地文稿库**（article_id → tomato_item_id → 标题精确匹配；匹配不到返回 warning）。` +
+        `若命中实名/人脸验证会停止并提示人工完成。字数需在 ${SHORT_MIN_WORDS}–${SHORT_MAX_WORDS}。` +
         `\n**发布成功后本工具会在返回里给出 \`microHeadline\` 建议：请据此询问用户「要不要再发一条微头条给这篇短故事引流」，` +
         `用户同意后用 create_micro_headline_tomato（先 confirm=false 预览自动生成的引导语，确认后再 confirm=true 发布）。**`,
       inputSchema: {
@@ -217,6 +233,7 @@ export function registerShortStoryTools(server: McpServer): void {
         file_path: z.string().optional(),
         article_id: z.string().optional(),
         categories: categoryShape,
+        main_category: mainCategoryShape,
         cover_path: z.string().optional().describe("本地封面图片路径（发布必填项的来源之一；不给＝沿用该草稿已有封面）"),
         sign_type: z.number().int().optional().describe("签约类型（一般不用改）"),
         divided_chapters: z.boolean().optional().describe("是否使用分章"),
@@ -247,6 +264,7 @@ export function registerShortStoryTools(server: McpServer): void {
         title: args.title,
         content,
         categories: args.categories,
+        mainCategory: args.main_category,
         coverPath: args.cover_path,
         signType: args.sign_type,
         dividedChapters: args.divided_chapters,
@@ -254,15 +272,23 @@ export function registerShortStoryTools(server: McpServer): void {
         confirm: args.confirm,
         headless: args.headless,
       });
-      if (args.article_id && r.itemId && r.action === "published") {
-        await articles.update(args.article_id, {
-          status: "published",
-          tomatoItemId: r.itemId,
-          lastMessage: r.message,
-          updatedAt: nowIso(),
+      // 发布成功 → 回写本地文稿库（article_id 优先，其次 tomatoItemId / 标题精确匹配），
+      // 匹配不到就明确 warning，绝不静默（否则本地库长期显示 draft，容易重复发布）。
+      if (r.itemId && r.action === "published") {
+        const wb = await syncArticleAfterPublish({
+          articleId: args.article_id,
+          itemId: r.itemId,
+          title: r.title ?? args.title,
+          message: r.message,
         });
+        (r as any).localArticle = { articleId: wb.articleId, matchedBy: wb.matchedBy, otherCandidates: wb.otherCandidates };
+        if (!wb.ok) r.warnings = [...(r.warnings ?? []), wb.message];
+        else logger.info(`[publish_short_story_tomato] ${wb.message}`);
+      } else if (args.article_id && r.itemId && r.action !== "published") {
+        // 没发成也别静默：把平台的实况写回 lastMessage，方便下次判断
+        await articles.update(args.article_id, { tomatoItemId: r.itemId, lastMessage: r.message, updatedAt: nowIso() });
       }
-      return fromService(withMicroHeadlineSuggestion(r, { title: args.title, content }) as any);
+      return fromService(withMicroHeadlineSuggestion(r, { title: args.title ?? r.title, content }) as any);
     }
   );
 

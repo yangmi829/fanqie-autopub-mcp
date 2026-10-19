@@ -159,6 +159,88 @@ export async function deleteArticle(id: string, confirm?: boolean): Promise<{ ok
   return { ok: true, action: "deleted", message: `已删除本地文稿「${item.title}」(${id})。` };
 }
 
+/* ------------------------------ 发布后回写本地库 ------------------------------ */
+
+export interface SyncPublishedResult {
+  ok: boolean;
+  /** 命中的本地 article_id */
+  articleId?: string;
+  matchedBy: "article_id" | "tomato_item_id" | "title" | "none";
+  /** 命中多个候选时的其它 id（用来看是不是有重复登记） */
+  otherCandidates?: string[];
+  message: string;
+}
+
+/**
+ * 发布成功后把本地文稿库的 `status` / `tomatoItemId` 回写掉。
+ *
+ * 为什么需要它（2026-10 事故）：`publish_short_story_tomato(item_id=…)` 这条路径**没有 article_id 入参**，
+ * 平台侧已经 `publish_status=1`，本地 `articles.json` 却还是 `status=draft / tomatoItemId=null`
+ * → `list_articles` / 批量导入会认为「还没发」，存在重复建篇、重复发布的风险。
+ *
+ * 匹配顺序（第一个命中即用）：
+ *   ① 显式 `articleId`；② `tomatoItemId` 相同（幂等，重跑不会重复命中别的条目）；
+ *   ③ 标题精确相等的 `kind=short` 条目（有多个时优先「没绑过 item_id 的」）。
+ */
+export async function syncArticleAfterPublish(opts: {
+  articleId?: string;
+  itemId: string;
+  title?: string;
+  message?: string;
+}): Promise<SyncPublishedResult> {
+  const all = await articles.all();
+  const now = nowIso();
+  const sameItem = all.filter((a) => a.tomatoItemId && a.tomatoItemId === opts.itemId);
+  const wantedTitle = (opts.title ?? "").trim();
+  const sameTitle = wantedTitle
+    ? all.filter((a) => a.kind === "short" && a.title.trim() === wantedTitle)
+    : [];
+
+  let target: Article | undefined;
+  let matchedBy: SyncPublishedResult["matchedBy"] = "none";
+  if (opts.articleId) {
+    target = all.find((a) => a.id === opts.articleId);
+    matchedBy = "article_id";
+  }
+  if (!target && sameItem.length) {
+    target = sameItem.find((a) => a.status !== "published") ?? sameItem[0];
+    matchedBy = "tomato_item_id";
+  }
+  if (!target && sameTitle.length) {
+    target = sameTitle.find((a) => a.status !== "published" || !a.tomatoItemId) ?? sameTitle[0];
+    matchedBy = "title";
+  }
+
+  if (!target) {
+    return {
+      ok: false,
+      matchedBy: "none",
+      otherCandidates: [...new Set([...sameItem, ...sameTitle].map((a) => a.id))],
+      message:
+        `⚠️ 发布成功但未能回写本地文稿库：没有 article_id=${opts.articleId ?? "-"}、` +
+        `tomatoItemId=${opts.itemId}、标题《${wantedTitle || "?"}》(kind=short) 任意一项能匹配到本地记录。` +
+        `请在下次发布时带上 article_id（或在发布成功后用 save_article 手工同步 status/tomato_item_id），` +
+        `避免本地库一直显示 draft 导致重复发布。`,
+    };
+  }
+
+  const others = [...new Set([...sameItem, ...sameTitle].map((a) => a.id))].filter((id) => id !== target!.id);
+  await articles.update(target.id, {
+    status: "published",
+    tomatoItemId: opts.itemId,
+    publishTime: target.publishTime ?? now,
+    ...(opts.message ? { lastMessage: opts.message } : {}),
+    updatedAt: now,
+  });
+  return {
+    ok: true,
+    articleId: target.id,
+    matchedBy,
+    otherCandidates: others.length ? others : undefined,
+    message: `已回写本地文稿库：article_id=${target.id}《${target.title}》status=published / tomatoItemId=${opts.itemId}（按 ${matchedBy} 匹配）。`,
+  };
+}
+
 /* ------------------------------ 导出正文 ------------------------------ */
 
 export interface ExportArticleInput {

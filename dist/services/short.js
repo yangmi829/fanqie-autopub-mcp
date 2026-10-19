@@ -371,6 +371,25 @@ async function chooseUseAI(page, useAI) {
         .catch(() => false);
 }
 /**
+ * 把 `main_category` 并入待选分类列表（放在最前面，并去重）。
+ *
+ * ⚠️ 顺序本身不决定主分类——平台按「分类所在的组」判定；这里只是让主分类也进入选择流程，
+ * 真正的校验在 `selectCategories` 回读 `mainApplied`。
+ */
+function categoryNames(requested, mainCategory) {
+    const list = (requested ?? []).map((s) => s.trim()).filter(Boolean);
+    const main = (mainCategory ?? "").trim();
+    if (main && !list.includes(main))
+        list.unshift(main);
+    return list;
+}
+/** 主分类缺失时的明确文案（附「主分类」组的可选项，让人一眼知道该填什么） */
+function mainCategoryHint(names, mainOptions) {
+    const opts = mainOptions.slice(0, 12).join("/");
+    return (`缺少主分类：传入的「${names.join("、")}」都不属于平台「主分类」组（发布硬要求，主分类必选，附加分类不能代替）。` +
+        (opts ? `主分类可选：${opts}${mainOptions.length > 12 ? "…" : ""}。` : "请从后台作品分类浮层的「主分类」组里选一个。"));
+}
+/**
  * 选作品分类（主分类必选，最多 8 个）。
  * 实测（2026-10）：不是「点标签」，而是**二级浮层**——必须先点开浮层，
  * 再按分类名反查它在第几组（组与选项列表同序），**激活该组**，最后点该组内的选项。
@@ -379,8 +398,12 @@ async function chooseUseAI(page, useAI) {
 async function selectCategories(page, names) {
     const applied = [];
     const missing = [];
+    /** 每个分类名落在第几组（组序＝主分类/情节/角色/情绪/背景） */
+    const groupOf = new Map();
+    let mainIdx = 0;
+    let mainOptions = [];
     if (!names.length)
-        return { applied, missing };
+        return { applied, missing, mainApplied: false, mainOptions };
     const S = SHORT_CATEGORY_SELECTORS;
     // 1) 打开浮层（选项是点开后才渲染的）
     const ensurePop = async () => {
@@ -397,8 +420,22 @@ async function selectCategories(page, names) {
     };
     if (!(await ensurePop())) {
         logger.warn("[selectCategories] 未能打开作品分类浮层");
-        return { applied, missing: [...names] };
+        return { applied, missing: [...names], mainApplied: false, mainOptions };
     }
+    // 1.5) 认一下「主分类」是哪一组（实测组标题文本就是「主分类」），并记下它的可选项
+    const meta = await page
+        .evaluate((s) => {
+        const labels = Array.from(document.querySelectorAll(s.label));
+        const idx = labels.findIndex((l) => (l.textContent || "").includes("主分类"));
+        const list = document.querySelectorAll(s.itemList)[idx >= 0 ? idx : 0];
+        const opts = list
+            ? Array.from(list.querySelectorAll(s.item)).map((e) => (e.textContent || "").trim()).filter(Boolean)
+            : [];
+        return { mainIdx: idx >= 0 ? idx : 0, mainOptions: opts.slice(0, 40) };
+    }, S)
+        .catch(() => ({ mainIdx: 0, mainOptions: [] }));
+    mainIdx = meta.mainIdx;
+    mainOptions = meta.mainOptions;
     for (const name of names) {
         // 实测：每选一个，浮层会收起 → 下一个分类前必须重新打开
         if (!(await ensurePop())) {
@@ -421,6 +458,7 @@ async function selectCategories(page, names) {
             missing.push(name);
             continue;
         }
+        groupOf.set(name, groupIdx);
         // 3) 激活该组（真实鼠标事件——arco 的组切换对 JS click 不敏感，必须 hover）
         const labeled = await page
             .evaluate((i, s) => {
@@ -489,12 +527,19 @@ async function selectCategories(page, names) {
         logger.info(`[selectCategories] 已选分类：${applied.join("、")}`);
     if (missing.length)
         logger.warn(`[selectCategories] 未选中：${missing.join("、")}（已选列表=${selectedText}）`);
+    // 5.5) 主分类是发布硬门：传入的名字里必须有落在「主分类」组的。
+    //      旧实现只看「已选列表里有没有这些名字」，于是「推理」「职场」（附加分类）也能通过，
+    //      发布时平台连弹三次「请选择作品主分类」→ 工具干等「提交确认」弹窗超时（2026-10 事故）。
+    const mainApplied = applied.some((n) => groupOf.get(n) === mainIdx);
+    if (!mainApplied) {
+        logger.warn(`[selectCategories] 未选中主分类（主分类组可选：${mainOptions.slice(0, 12).join("/") || "未知"}）`);
+    }
     // 6) 回读-清理：新建 item 时平台会**自动挂一个默认标签**（2026-10 实测「西方古典」，背景组），
     //    旧实现只增不删 → 发布出去的分类里混着无关项、清不掉。这里把请求集合之外的已选标签删掉。
     const pruned = await pruneCategories(page, names);
     if (pruned.length)
         logger.info(`[selectCategories] 已移除多余分类：${pruned.join("、")}`);
-    return { applied, missing };
+    return { applied, missing, mainApplied, mainOptions };
 }
 /**
  * 关闭「作品分类」浮层。
@@ -628,10 +673,13 @@ export async function createShortStory(opts) {
         await sleep(800);
         if (typeof opts.useAI === "boolean")
             await chooseUseAI(page, opts.useAI);
-        if (opts.categories?.length) {
-            const cat = await selectCategories(page, opts.categories);
+        const catNames = categoryNames(opts.categories, opts.mainCategory);
+        if (catNames.length) {
+            const cat = await selectCategories(page, catNames);
             if (cat.missing.length)
                 warnings.push(`未找到分类：${cat.missing.join("、")}`);
+            if (!cat.mainApplied)
+                warnings.push(mainCategoryHint(catNames, cat.mainOptions));
             if (cat.applied.length)
                 logger.info(`[createShortStory] 已选分类：${cat.applied.join("、")}`);
         }
@@ -677,6 +725,7 @@ export async function createShortStory(opts) {
             message: `已保存短故事草稿 item_id=${itemId}${verify.saved ? "（已复核标题已落库）" : "（未能在详情接口复核到标题，请到草稿箱确认）"}，` +
                 `正文字数≈${wordCount}。`,
             itemId,
+            title: opts.title.trim(),
             wordCount,
             url: page.url(),
             screenshotPath: file,
@@ -769,10 +818,13 @@ export async function updateShortStory(opts) {
         await sleep(800);
         if (typeof opts.useAI === "boolean")
             await chooseUseAI(page, opts.useAI);
-        if (opts.categories?.length) {
-            const cat = await selectCategories(page, opts.categories);
+        const catNames = categoryNames(opts.categories, opts.mainCategory);
+        if (catNames.length) {
+            const cat = await selectCategories(page, catNames);
             if (cat.missing.length)
                 warnings.push(`未找到分类：${cat.missing.join("、")}`);
+            if (!cat.mainApplied)
+                warnings.push(mainCategoryHint(catNames, cat.mainOptions));
             if (cat.applied.length)
                 logger.info(`[updateShortStory] 已选分类：${cat.applied.join("、")}`);
         }
@@ -801,6 +853,7 @@ export async function updateShortStory(opts) {
                 `当前标题《${snap.title}》，正文≈${snap.wordNumber} 字（传入正文≈${wordCount} 字）。` +
                 `⚠️ 若该短故事已发布，改动可能需要重新审核；要发布请用 publish_short_story_tomato。`,
             itemId: opts.itemId,
+            title: snap.title,
             wordCount: snap.wordNumber,
             url: page.url(),
             screenshotPath: file,
@@ -1141,7 +1194,11 @@ export async function publishShortStory(opts) {
         return { ok: false, action: "aborted", message: "需提供 item_id，或 title（+content）以新建并发布。" };
     }
     const content = opts.content ?? "";
-    const { wordCount, warnings } = validateShortContent(content);
+    // ⚠️ 带 item_id 发布时天然不传正文（沿用草稿里的），不能因此报「未提供正文」误导调用方重复上传。
+    const hasContent = content.trim().length > 0;
+    const { wordCount, warnings } = hasContent
+        ? validateShortContent(content)
+        : { wordCount: 0, warnings: [] };
     const target = opts.itemId
         ? shortPublishUrl(opts.itemId)
         : "/main/writer/publish-short/?enter_from=NEWCHAPTER_1";
@@ -1167,10 +1224,17 @@ export async function publishShortStory(opts) {
                 await fillBody(page, bodySel, toPlainText(content));
         }
         await sleep(800);
-        if (opts.categories?.length) {
-            const cat = await selectCategories(page, opts.categories);
+        const catNames = categoryNames(opts.categories, opts.mainCategory);
+        let mainApplied;
+        let mainOptions = [];
+        if (catNames.length) {
+            const cat = await selectCategories(page, catNames);
+            mainApplied = cat.mainApplied;
+            mainOptions = cat.mainOptions;
             if (cat.missing.length)
                 warnings.push(`未找到分类：${cat.missing.join("、")}`);
+            if (!cat.mainApplied)
+                warnings.push(mainCategoryHint(catNames, cat.mainOptions));
         }
         if (!opts.confirm) {
             if (typeof opts.useAI === "boolean")
@@ -1179,11 +1243,16 @@ export async function publishShortStory(opts) {
                 warnings.push("封面文件未能上传。");
             }
             const file = await shot(page, "short-publish-filled");
+            const draftNote = opts.itemId && !hasContent
+                ? `本次未传正文，沿用草稿内正文（回读 ${(await readShortInPage(page, itemId)).wordNumber} 字）。`
+                : content
+                    ? `正文字数≈${wordCount}。`
+                    : "仅校验作品信息，未改动正文。";
             return {
                 ok: true,
                 action: "filled-not-submitted",
                 message: `已打开 item_id=${itemId} 并填入信息（未发布，confirm=false）。` +
-                    (content ? `正文字数≈${wordCount}。` : "仅校验作品信息，未改动正文。") +
+                    draftNote +
                     "确认后传 confirm=true 执行发布。",
                 itemId,
                 wordCount: content ? wordCount : undefined,
@@ -1201,6 +1270,21 @@ export async function publishShortStory(opts) {
                 ok: false,
                 action: "aborted",
                 message: "平台强制要求声明「是否使用AI」：发布必须显式指定 use_ai（true=是 / false=否），工具不替你猜。",
+                itemId,
+                url: page.url(),
+                screenshotPath: file,
+                warnings: warnings.length ? warnings : undefined,
+            };
+        }
+        // 主分类缺失是「下一步」的静默硬门（只弹 3 秒 toast）→ 这里直接停下并给出可选项，别白跑一轮。
+        if (catNames.length && mainApplied === false) {
+            const file = await shot(page, "short-main-category-missing");
+            return {
+                ok: false,
+                action: "aborted",
+                message: `${mainCategoryHint(catNames, mainOptions)} ` +
+                    `本次未提交发布${opts.itemId ? `（item_id=${itemId} 未做改动）` : ""}。` +
+                    `把 main_category 传成主分类组里的名字（或从 categories 里换掉附加分类）再重试。`,
                 itemId,
                 url: page.url(),
                 screenshotPath: file,
@@ -1332,14 +1416,16 @@ export async function publishShortStory(opts) {
             return snap.publishStatus === 1 ? snap : null;
         }, 30000, 3000);
         const file = await shot(page, verified ? "short-published" : "short-publish-result");
+        const draftNote = verified && opts.itemId && !hasContent ? `本次未传正文，沿用草稿内正文（回读 ${verified.wordNumber} 字）。` : "";
         return {
             ok: !!verified,
             action: verified ? "published" : "error",
             message: verified
-                ? `已发布 item_id=${itemId}（后台 publish_status=1）。` +
+                ? `已发布 item_id=${itemId}（后台 publish_status=1）。${draftNote}` +
                     `⚠️ 番茄审核工作时间 7:00-24:00：夜间提交会卡在「审核中」直至次日早上 7-9 点。`
                 : `发布流程已走完，但 edit/v1 的 publish_status 仍未变为 1，请到短故事列表/草稿箱核对。`,
             itemId,
+            title: verified?.title,
             url: page.url(),
             screenshotPath: file,
             warnings: warnings.length ? warnings : undefined,

@@ -198,7 +198,7 @@ npx -y fanqie-autopub-mcp@latest --selfcheck
 | `get_short_story_tomato` | 读详情：标题/字数/分类/签约状态/可否修改 |
 | `create_short_story_tomato` | 新建并（可选）保存草稿；返回 `item_id` |
 | `update_short_story_tomato` | **改已存在短故事**（`/publish-short/{item_id}` 编辑页）：标题/正文/分类/封面/是否AI。只覆盖显式传入的字段；`confirm=true` **只点「存草稿」（不发布）**；默认 `confirm=false` 只打开编辑页读现状 + 截图、**完全不填充** |
-| `publish_short_story_tomato` | 发布：`item_id` 直发，或 `title`+`content` 新建并发布。**平台强制四项**：封面（`cover_path` 或沿用已有）、`use_ai=true\|false`（必须显式声明）、发布协议 + 试读比例（自动补齐）。发布后按 `publish_status=1` 复核 |
+| `publish_short_story_tomato` | 发布：`item_id` 直发，或 `title`+`content` 新建并发布。**平台强制四项**：封面（`cover_path` 或沿用已有）、`use_ai=true\|false`（必须显式声明）、发布协议 + 试读比例（自动补齐）。发布后按 `publish_status=1` 复核，并**自动回写本地文稿库**（`status=published`；按 `article_id` → `tomato_item_id` → 标题匹配，匹配不到返回 warning） |
 | `set_short_story_cover_tomato` | 上传本地封面图片（「封面设置 → 本地上传」抽屉；建议 600×800、jpg/png、≤5MB） |
 | `delete_short_story_tomato` | 删除短故事/草稿（默认预览；confirm=true 时驱动草稿箱真实 UI 删除） |
 
