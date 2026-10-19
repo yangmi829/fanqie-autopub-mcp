@@ -20,6 +20,7 @@
 - Node ≥ 20；ESM（`"type": "module"`）。
 - `puppeteer-core`（optionalDependency）+ 本机 Chrome/Edge；路径用 `FANQIE_CHROME_PATH`，否则自动探测。
 - 需有效登录态 `data/tomato_cookies.json`（由工具 `login_tomato` 生成）。`get_publish_status` 是权威自检，`ready=true` 再继续。
+- **改了 `src/` 后，跑着的 MCP 服务不会自动换新代码**：连接器（WorkBuddy 等）里的 `node dist/index.js` 是启动时就把代码加载完了的长驻进程，不重启就一直用旧 `dist/`（症状是「改了没生效 / 又复现了」）。改用 `node scripts/mcp-cli.mjs <tool>` 验证——那是新进程，拿到的是当前 `dist/`。
 
 ## ⚠️ 硬约束（不了解必踩坑）
 1. **写接口只能驱动真实页面**：番茄 author 写接口带 `msToken`/`a_bogus` 签名，手工 fetch 必返回 `-2 参数有误`。只有**只读 GET**（list / edit / category 类）能走 `browser/endpoints.ts` 的 `apiGet()` 免签名。注意：删除短故事草稿同样是写接口 → 必须走草稿箱 UI（hover → `.serial-icon-general_delete` → 确认弹窗）；且 SVG 元素**没有 `.click()`**，得用 `page.mouse.click(x, y)`。
@@ -36,6 +37,15 @@
 12. **微头条不是短故事编辑页里的东西**（2026-10 实测）：入口是「作品管理 → 短篇作品 → **作品推荐**」=`/main/writer/short-recommend`（另见 `/main/writer/short-recommend-draft` 草稿箱）。API 前缀 `short_article/wtt_*`：`wtt_list` / `wtt_draft_list` / `card_list` 是**只读**（`card_list` 是 POST 但免签名，走 `endpoints.ts` 的 `apiPostQuery`），`publish_wtt` / `delete_wtt` 是**写**→ 必须点页面按钮。编辑器是右侧抽屉：正文 `textarea`（默认值 `#故事推荐#`）+「添加图片」+「添加短篇」（弹 `.arco-modal.short-modal`「插入短篇」，点 `.short-select-item` → `.short-select-item-selected` → 「确定」）。前端硬门（只弹提示，不报错）：正文 <10 或 >1500 字、未选短篇。改版只改 `services/microHeadline.ts` 顶部的 `MICRO_SELECTORS`。
 13. **远程传输（Streamable HTTP）的安全红线**：① 只有显式 `--http` / `FANQIE_TRANSPORT=http` 才开，stdio 默认路径**不许**引入 http 相关副作用（`src/index.ts` 用动态 `import("./http.js")`，别改成顶层 import）；② **回环地址免鉴权、非回环必填 Token**（2026-10-18 调整）：`FANQIE_HTTP_HOST` 是 `127.0.0.1` / `localhost` / `::1` 时允许不设 `FANQIE_HTTP_TOKEN`（本机零配置），此时 `http.ts` 完全不校验 `Authorization`；一旦绑非回环地址，`remoteOptions()` 在缺 Token 时**必须**抛错拒绝启动（宁可起不来也不能裸奔暴露写权限），Token 给得短（<16 字符）同样拒绝。判断依据只能用 `isLoopback(host)`，不要写死 `127.0.0.1` 字面量；Token 比对用 `crypto.timingSafeEqual`（哈希后比，避免长度泄漏）；③ 默认只监听 `127.0.0.1`，绑非回环要告警；④ 新增写工具时**必须**确认 `core/remote.ts` 的 `isWriteTool()` 能判到它（显式名单 + 前缀正则兜底），否则 `FANQIE_HTTP_READONLY=1` 会漏；⑤ 只读拦截做在 HTTP 协议入口（`tools/call` 的 `params.name`），不改 `buildServer()`，因为 stdio 本地用法要保持全功能；⑥ `/health` 是唯一免鉴权端点，只许回最小信息，别往里塞 cookies / 路径等敏感内容；⑦ 启动日志里的 `远程端点已就绪: http://…` 一行是 `scripts/smoke.mjs` 的解析锚点，改文案要同步改冒烟正则。
 14. **npm 发布（2026-10-18）**：① `package.json` 的 `files` 是**白名单**（`dist` / `README.md` / `LICENSE`）——`data/*` **绝不能**进 tarball。`.gitignore` 只保护 git：npm 仅在既无 `files` 又无 `.npmignore` 时才回退读 `.gitignore`，所以一旦白名单被删或加了 `.npmignore`，**有效 cookies 会被发到公共 registry，不可逆**。改发布配置后必跑 `npm pack --dry-run --json` 核对文件清单。② `prepack` 钩子会 `npm run build`（发出去的产物一定有构建），但**仓库里的 `dist/` 仍必须同步提交**（clone 用法靠它，见「提交前必须知道」）。③ `core/paths.ts` 的数据目录是**三级解析**：`FANQIE_DATA_DIR` → `<项目根>/data`（目录存在即用，保住仓库内 / clone 的历史行为）→ `~/.fanqie-autopub`（npm / npx 安装：发布包不含 `data/`，且包目录在 npm 缓存里会被清）。`DATA_DIR_SOURCE` 会进启动日志与 `get_publish_status` / `--selfcheck` 的 `details`，排障先看它。**别把默认值改回「包目录」**，那等于让 npx 用户的登录态和文稿库随时蒸发。④ **版本号不许写死**：`src/index.ts` 的 `SERVER_VERSION` 必须取 `core/paths.ts` 的 `PACKAGE_VERSION`（读 `package.json`）。曾经写死 `"1.0.0"`，`npm version` 升到 1.1.0 后 `/health`、MCP `serverInfo`、stdio 启动日志一起报旧版本；`scripts/smoke.mjs` 现在有 2 条断言（stdio `getServerVersion()` 与远程 `/health` 的 `version` 都须等于 `package.json` 的 `version`）盯着这件事。
+15. **页面级文本判断会被「编辑器正文」污染**（2026-10-19 血泪）：`document.body.innerText` **包含正在编辑的稿件正文**。短故事实名守卫原来用 `/实名|人脸|认证|身份验证/` 扫整页，被《402的草莓》正文「…一是**记人脸**…」命中 → 工具在**正常的「提交确认」弹窗**处判成"要求实名"并中止发布；同账号另一篇正文没这些词所以能发，于是被误判成"偶发/回归"。写守卫/校验一律**只看可见模态 + 精确指令句**（见 `services/short.ts` 的 `authWallText()`），兜底也按容器（`.syl-editor-container`）剔除正文；返回里带上命中文案，别只回「疑似实名」。
+16. **真实鼠标点击必须先 `scrollIntoView` 再取 `boundingBox`**：`boundingBox()` 给的是文档坐标，编辑页极长（实测「是否使用AI」在 y≈39205，视口仅 900）→ 直接 `page.mouse.click(box.x, box.y)` 点的是**视口外的空气**，字段看起来"没反应"其实根本没点上。仓库里统一用 `realClick()` / `realClickText()`（`services/short.ts`）。`page.click(sel)` 自带滚动所以没事——**手写的 `boundingBox` + `mouse.click` 最容易漏这一步**。
+
+## 短故事发布页（2026-10-19 真机实测）
+- **分类浮层的 `Escape` 关不掉**：`.publish-short-category-select-pop` 按 Escape 仍在（实测高 214），它盖在表单上会**吃掉后续所有真实鼠标点击** → 点「发布协议」实际点到浮层里的分类项 → 报「发布必填项未补齐：发布协议未勾选」。只能**点浮层外空白**关（`closeCategoryPop()`，并校验真的关了）；`acceptPublishTerms` 每次重试前都先调它，并校验「短故事发布事项」弹窗真的打开了。
+- **「发布协议」/「是否使用AI」不随「存草稿」保留**：重开页面就是未勾 / 未选，每次发布都要现补（试读比例是正文里的节点 `window.adapter.getExistNodes("payNode")`，实测重开仍在）。这几道门缺一个只弹 **3 秒即消失**的 toast，所以顺序必须是「先补齐 → `readPublishGates` 自检 → 再点下一步」。
+- **新 item 平台会默认挂一个分类「西方古典」**（**不是「西方奇幻」**，写脚本别凭印象）。`selectCategories` 现在会回读已选列表、删掉请求集合外的标签（`pruneCategories`），且**每次删除都回读校验**——没有校验时，被浮层吃掉点击照样打「已移除多余分类」的假日志。已选标签 DOM = `.publish-short-category-select-selected` + `svg.serial-icon-general_close`（svg 无 `.click()`）。
+- 平台页面显示的「正文字数」与本地 `wordCount` 口径不同（实测 10304 vs 8329），别据此判断正文缺失/超限。
+- 排障先看 `data/screenshots/short-*.png`（每步都截图）：`short-realname-required-*.png` **未必**是实名墙（历史上那两张就是正常「提交确认」弹窗）。
 
 ## 架构
 - 分层：`services/*`（业务 + 浏览器驱动，统一返回 `{ ok, message, ... }`）→ `tools/*`（薄 MCP 包装，用 `core/result.ts` 的 `fromService()` 转 MCP 结果）→ `resources/*`（只读、不联网）。
@@ -43,7 +53,7 @@
 - 入口 `src/index.ts`：`buildServer()` 注册全部工具与资源后接 `StdioServerTransport`；传 `--selfcheck` 只打印环境自检后退出；`--http` / `FANQIE_TRANSPORT=http` 时动态 import `src/http.ts` 起 Streamable HTTP 端点（同一份 `buildServer()`，会话按 `mcp-session-id` 管理）。
 - 远程相关：`core/remote.ts`（纯配置解析 + 写工具判定，不 import SDK / http）+ `http.ts`（node:http 手写路由、Bearer 鉴权、只读拦截、信号优雅关闭），不引入 express。
 - SDK 用法：`server.registerTool(name, { description, inputSchema: { ...zodRawShape } }, handler)`（MCP SDK 1.x + zod v4）。
-- 存储：`core/store.ts` 的 `Collection<T>`（JSON 原子写 tmp → rename），集合为 `novels` / `shortStories` / `articles` / `tasks`。
+- 存储：`core/store.ts` 的 `Collection<T>`（JSON 原子写 tmp → rename），集合为 `novels` / `shortStories` / `articles` / `tasks`。⚠️ 用 `publish_short_story_tomato(item_id=…)` 发布**不会**回写 `articles.json` 的 `status`（实测仍是 `draft`）——确认发布成功后要顺手 `save_article(article_id=…, status="published")` 同步，否则本地库与平台状态长期不一致。
 - 纯本地能力不碰浏览器：知识数据在 `knowledge/`（`list_genres` + 两个资源），检测算法在 `services/originality.ts`（`check_originality`）。
 - 背景与决策记录见 `docs/PLAN.md`。
 
