@@ -186,7 +186,7 @@ npx -y fanqie-autopub-mcp@latest --selfcheck
 | 工具 | 说明 |
 |---|---|
 | `list_chapters_tomato` | 读某本书的章节列表，用于复核与避重 |
-| `add_chapter_tomato` | 序号+标题+正文 → 下一步 → 内容检测方式 → 发布设置(是否使用AI) → 确认提交 → 错别字二次确认 → 接口复核；支持 `scheduled_time` 定时发布 |
+| `add_chapter_tomato` | 序号+标题+正文 → 下一步 → 内容检测方式 → 发布设置(是否使用AI，**默认选「是」/AI生成**，显式 `use_ai=false` 才选「否」) → 确认提交 → 错别字二次确认 → 接口复核；支持 `scheduled_time` 定时发布 |
 | `update_chapter_tomato` | **改已发布章节**：走章节列表的编辑入口 `publish/{chapterId}/?enter_from=modifychapter`，复用上面同一条发布链路，最后按 `chapter_id` 复核标题。正文可用 `content`/`file_path`/`article_id`；**都不给＝保留线上正文、只改标题**。⚠️ 该编辑器边输入边自动保存，所以 `confirm=false` 时**只打开修改页读现状 + 截图，完全不填充**（避免误改线上）；`confirm=true` 才填入并提交 |
 | `batch_publish_chapters` | 从本地文稿库挑「待发布」章节，按序限速依次上传；单章失败不中断 |
 
@@ -198,7 +198,7 @@ npx -y fanqie-autopub-mcp@latest --selfcheck
 | `get_short_story_tomato` | 读详情：标题/字数/分类/签约状态/可否修改 |
 | `create_short_story_tomato` | 新建并（可选）保存草稿；返回 `item_id` |
 | `update_short_story_tomato` | **改已存在短故事**（`/publish-short/{item_id}` 编辑页）：标题/正文/分类/封面/是否AI。只覆盖显式传入的字段；`confirm=true` **只点「存草稿」（不发布）**；默认 `confirm=false` 只打开编辑页读现状 + 截图、**完全不填充** |
-| `publish_short_story_tomato` | 发布：`item_id` 直发，或 `title`+`content` 新建并发布。**平台强制四项**：封面（`cover_path` 或沿用已有）、`use_ai=true\|false`（必须显式声明）、发布协议 + 试读比例（自动补齐）。发布后按 `publish_status=1` 复核，并**自动回写本地文稿库**（`status=published`；按 `article_id` → `tomato_item_id` → 标题匹配，匹配不到返回 warning） |
+| `publish_short_story_tomato` | 发布：`item_id` 直发，或 `title`+`content` 新建并发布。**平台强制四项**：封面（`cover_path` 或沿用已有）、`use_ai`（**默认 `true`＝选「是」/「AI生成」等肯定项**，显式 `false` 才选「否」）、发布协议 + 试读比例（自动补齐）。发布后按 `publish_status=1` 复核，并**自动回写本地文稿库**（`status=published`；按 `article_id` → `tomato_item_id` → 标题匹配，匹配不到返回 warning） |
 | `set_short_story_cover_tomato` | 上传本地封面图片（「封面设置 → 本地上传」抽屉；建议 600×800、jpg/png、≤5MB） |
 | `delete_short_story_tomato` | 删除短故事/草稿（默认预览；confirm=true 时驱动草稿箱真实 UI 删除） |
 
@@ -263,7 +263,7 @@ npx -y fanqie-autopub-mcp@latest --selfcheck
 
 ## 5. 已知边界
 
-- **短故事「发布会静默失败」的三个必填门**（2026-10 逆向编辑页 `PublishShort.*.js` 的 `handleClickPublish` 实测）：点「下一步」时若 **封面**、**是否使用AI**、**发布协议**、**试读比例** 任一未补齐，页面**只弹一个 3 秒就消失的 toast**（`请上传封面` / `请选择是否使用 AI` / …）然后原样返回——很容易误判成「按钮没反应」。本工具的做法是：先按固定顺序补齐四项（协议 → AI → 试读 30% → 封面），再用 `readPublishGates` 自检，缺项直接报出原因而不是空跑。其中封面与「是否使用AI」是内容/合规决策，**工具不替用户猜**：封面靠 `cover_path`（或沿用草稿已有封面），AI 必须显式传 `use_ai`。
+- **短故事「发布会静默失败」的三个必填门**（2026-10 逆向编辑页 `PublishShort.*.js` 的 `handleClickPublish` 实测）：点「下一步」时若 **封面**、**是否使用AI**、**发布协议**、**试读比例** 任一未补齐，页面**只弹一个 3 秒就消失的 toast**（`请上传封面` / `请选择是否使用 AI` / …）然后原样返回——很容易误判成「按钮没反应」。本工具的做法是：先按固定顺序补齐四项（协议 → AI → 试读 30% → 封面），再用 `readPublishGates` 自检，缺项直接报出原因而不是空跑。其中封面是内容决策，**工具不替用户猜**（靠 `cover_path`，或沿用草稿已有封面）；「是否使用AI」按业务约定**默认取肯定项**：不传 `use_ai` 时选「是」（平台若改成「AI生成 / 含AI生成内容」等同义项也自动命中），只有显式 `use_ai=false` 才选「否」。
 - **顺序坑**：封面抽屉关闭后会残留一层遮罩，**吃掉后续所有真实鼠标点击**（`element.click()` 不受影响）。所以「发布协议」必须点在最前面，其它按钮一律走 JS 点击。
 - **发布成功判据**：`下一步` →（可能弹「发布提示」→「继续发布」）→「提交确认」弹窗 → 点「确定」才真正提交；本工具以 `edit/v1` 的 `publish_status=1` 复核。
 - **夜间审核**：番茄审核工作时间 7:00–24:00，夜间提交会卡在「审核中」（期间无法修改/删除）直至次日早上 7–9 点。

@@ -238,6 +238,50 @@ async function chooseDetection(page, mode, timeoutMs = 20000) {
     }
     return false;
 }
+/**
+ * 「是否使用AI」的选项文案。
+ * 番茄现版是「是 / 否」；平台若改成「AI生成 / 非AI生成」，这里兜住。
+ * ⚠️ 业务要求：AI 相关声明一律选**肯定项**（是 / AI生成），默认 useAI=true。
+ */
+const AI_YES_LABELS = ["是", "AI生成", "AI 生成", "含AI生成内容", "AI创作", "AI辅助创作", "人工智能生成"];
+const AI_NO_LABELS = ["否", "非AI生成", "不是AI生成", "本人原创", "人工创作"];
+/** 在指定容器里点中目标选项，并回读是否真的选中（返回点中的文案） */
+async function clickChoiceInBox(page, boxTextRe, labels, fallbackDocument = true) {
+    return page
+        .evaluate((src, wanted, fallback) => {
+        const rx = new RegExp(src);
+        const ds = Array.from(document.querySelectorAll('[role="dialog"],[class*="modal"],[class*="dialog"]'));
+        const box = ds.find((d) => rx.test(d.textContent || "")) || (fallback ? document : null);
+        if (!box)
+            return null;
+        const all = Array.from(box.querySelectorAll("label,[role=radio],.arco-radio,.arco-checkbox"));
+        const norm = (s) => s.replace(/\s+/g, "");
+        let lab = null;
+        for (const t of wanted) {
+            lab =
+                all.find((l) => norm(l.textContent || "") === norm(t)) ||
+                    all.find((l) => norm(t).length > 1 && norm(l.textContent || "").includes(norm(t)));
+            if (lab)
+                break;
+        }
+        if (!lab)
+            return null;
+        const hit = norm(lab.textContent || "");
+        const input = lab.querySelector('input[type="radio"],input[type="checkbox"]');
+        try {
+            (input ?? lab).click();
+            lab.click();
+        }
+        catch {
+            /* 忽略 */
+        }
+        const checked = (input && input.checked) ||
+            /is-checked|is-active|checked/.test(String(lab.className || "")) ||
+            lab.getAttribute("aria-checked") === "true";
+        return checked ? hit : checked === false ? null : hit;
+    }, boxTextRe.source, labels, fallbackDocument)
+        .catch(() => null);
+}
 /** 「发布设置」弹窗：选「是否使用AI」→「确认提交」（真正触发发布） */
 async function confirmPublishSettings(page, useAI, timeoutMs = 20000) {
     const deadline = Date.now() + timeoutMs;
@@ -250,22 +294,11 @@ async function confirmPublishSettings(page, useAI, timeoutMs = 20000) {
     }
     if (!present)
         return false;
-    const target = useAI ? "是" : "否";
-    await page
-        .evaluate((t) => {
-        const ds = Array.from(document.querySelectorAll('[role="dialog"],[class*="modal"],[class*="dialog"]'));
-        const box = ds.find((d) => /发布设置/.test(d.textContent || "")) || document;
-        const lab = Array.from(box.querySelectorAll("label")).find((l) => (l.textContent || "").trim() === t);
-        if (lab) {
-            const input = lab.querySelector('input[type="radio"]');
-            if (input)
-                input.click();
-            else
-                lab.click();
-        }
-    }, target)
-        .catch(() => { });
+    const labels = useAI ? AI_YES_LABELS : AI_NO_LABELS;
+    const picked = await clickChoiceInBox(page, /发布设置/, labels);
     await sleep(800);
+    if (!picked)
+        logger.warn(`[发布设置] 未点中「是否使用AI=${useAI ? "是" : "否"}」的选项`);
     return clickByEvaluate(page, (b) => (b.textContent || "").trim() === "确认提交");
 }
 /** 在页面里找 button，打标记后用真实鼠标点击（SPA 依赖真实事件） */
@@ -574,7 +607,8 @@ export async function uploadChapter(opts) {
         await sleep(2500);
         const detection = opts.detection === "full" ? "full" : "basic";
         // Step3-5 轮流处理：内容检测方式 → 发布设置 → 错别字确认（后两者可能被跳过）
-        const submitted = await drivePublishDialogs(page, detection, opts.useAI === true);
+        // 「是否使用AI」默认选「是」（AI 相关声明一律选肯定项），显式 useAI=false 才选「否」
+        const submitted = await drivePublishDialogs(page, detection, opts.useAI !== false);
         if (!submitted) {
             await shot(page, "chapter-submit-missing").catch(() => "");
             logger.warn("未检测到「提交」确认弹窗，仍尝试复核发布结果");

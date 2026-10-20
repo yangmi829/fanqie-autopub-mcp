@@ -385,24 +385,34 @@ async function clickButtonByText(page: any, label: string): Promise<boolean> {
 /**
  * 选「是否使用AI」单选（发布必填项；不选则「下一步」弹「请选择是否使用 AI」并中止）。
  * 实测：容器 class 含 `publish_short_config_use_ai`，里面是 `label.arco-radio` 的「是 / 否」。
+ * ⚠️ 业务要求：AI 相关声明一律选**肯定项**（是 / AI生成），发布默认 useAI=true。
  */
+const AI_YES_LABELS = ["是", "AI生成", "AI 生成", "含AI生成内容", "AI创作", "AI辅助创作", "人工智能生成"];
+const AI_NO_LABELS = ["否", "非AI生成", "不是AI生成", "本人原创", "人工创作"];
+
 async function chooseUseAI(page: any, useAI: boolean): Promise<boolean> {
-  const label = useAI ? "是" : "否";
+  const labels = useAI ? AI_YES_LABELS : AI_NO_LABELS;
   const clicked = await page
-    .evaluate((t: string, sel: string) => {
+    .evaluate((want: string[], sel: string) => {
+      const norm = (s: string) => s.replace(/\s+/g, "");
       const boxes = Array.from(document.querySelectorAll(sel)) as any[];
       const box = boxes.find((b) => b.querySelectorAll("label").length > 0);
-      if (!box) return false;
-      const lab = (Array.from(box.querySelectorAll("label")) as any[]).find(
-        (l: any) => (l.textContent || "").trim() === t
-      ) as any;
-      if (!lab) return false;
-      const input = lab.querySelector('input[type="radio"]');
+      if (!box) return null;
+      const las = Array.from(box.querySelectorAll("label")) as any[];
+      let lab: any = null;
+      for (const t of want) {
+        lab =
+          las.find((l: any) => norm(l.textContent || "") === norm(t)) ||
+          las.find((l: any) => norm(t).length > 1 && norm(l.textContent || "").includes(norm(t)));
+        if (lab) break;
+      }
+      if (!lab) return null;
+      const input = lab.querySelector('input[type="radio"],input[type="checkbox"]');
       if (input) (input as any).click();
       lab.click();
-      return true;
-    }, label, SHORT_PUBLISH_SELECTORS.useAi)
-    .catch(() => false);
+      return norm(lab.textContent || "");
+    }, labels, SHORT_PUBLISH_SELECTORS.useAi)
+    .catch(() => null);
   if (!clicked) return false;
   await sleep(600);
   return page
@@ -1337,6 +1347,7 @@ export interface PublishShortStoryOptions {
   coverPath?: string;
   signType?: number;
   dividedChapters?: boolean;
+  /** 「是否使用AI」：默认 true（选「是」/「AI生成」），显式 false 才选「否」 */
   useAI?: boolean;
   confirm?: boolean;
   headless?: boolean;
@@ -1351,7 +1362,8 @@ export interface PublishShortStoryOptions {
  * `下一步` 的必填门（2026-10 逆向 `PublishShort.*.js` 的 `handleClickPublish` 实测）：
  * 标题（空/空格/超长/查重）→ 字数 → 封面 → 分类（含主分类）→ 试读比例 → 发布协议 → 是否使用AI。
  * 缺项只会弹 3 秒即消失的 toast，所以本方法先补齐、再用 `readPublishGates` 自检，缺项直接给出明确原因。
- * 封面与「是否使用AI」是内容/合规决策，工具不替用户猜：封面靠 cover_path（或沿用已有），AI 必须显式传 useAI。
+ * 封面是内容决策，靠 cover_path（或沿用已有）；「是否使用AI」**默认选「是」**（AI 声明一律取肯定项），
+ * 只有显式传 useAI=false 才选「否」。
  * ⚠️ 发布可能触发实名/人脸验证，命中时只提示、不硬闯（`authWallText`：只看可见弹窗 + 精确指令句，
  * 且剔除编辑器正文——正文里出现「人脸」「实名」这类词不算命中）。
  */
@@ -1407,7 +1419,7 @@ export async function publishShortStory(opts: PublishShortStoryOptions): Promise
     }
 
     if (!opts.confirm) {
-      if (typeof opts.useAI === "boolean") await chooseUseAI(page, opts.useAI);
+      if (!(await chooseUseAI(page, opts.useAI !== false))) warnings.push("未能选中「是否使用AI」（默认取「是」）。");
       if (opts.coverPath && !(await uploadCover(page, opts.coverPath))) {
         warnings.push("封面文件未能上传。");
       }
@@ -1436,18 +1448,8 @@ export async function publishShortStory(opts: PublishShortStoryOptions): Promise
     // ---- confirm=true：把「下一步」的四个必填门逐个补齐（2026-10 逆向 PublishShort.*.js + 真机实测）----
     // 顺序有讲究：①「发布协议」只有**真实鼠标点协议文字**才勾得上，且必须排在打开封面抽屉**之前**，
     // 因为抽屉关掉后残留的遮罩会吃掉后续所有真实鼠标点击（JS click 不受影响，故其它步骤照旧能跑）。
-    if (typeof opts.useAI !== "boolean") {
-      const file = await shot(page, "short-useai-missing");
-      return {
-        ok: false,
-        action: "aborted",
-        message: "平台强制要求声明「是否使用AI」：发布必须显式指定 use_ai（true=是 / false=否），工具不替你猜。",
-        itemId,
-        url: page.url(),
-        screenshotPath: file,
-        warnings: warnings.length ? warnings : undefined,
-      };
-    }
+    // 「是否使用AI」默认选「是」（AI 声明一律取肯定项），显式 useAI=false 才选「否」。
+    const useAI = opts.useAI !== false;
     // 主分类缺失是「下一步」的静默硬门（只弹 3 秒 toast）→ 这里直接停下并给出可选项，别白跑一轮。
     if (catNames.length && mainApplied === false) {
       const file = await shot(page, "short-main-category-missing");
@@ -1465,7 +1467,7 @@ export async function publishShortStory(opts: PublishShortStoryOptions): Promise
       };
     }
     if (!(await acceptPublishTerms(page))) warnings.push("未能勾上「发布协议」，发布可能被拦（已重试 3 次）。");
-    if (!(await chooseUseAI(page, opts.useAI))) warnings.push("未能选中「是否使用AI」。");
+    if (!(await chooseUseAI(page, useAI))) warnings.push("未能选中「是否使用AI」（默认取「是」）。");
     if (!(await ensurePayNode(page))) warnings.push("未能设置「试读比例」（点「去设置」后未出现试读线）。");
     if (opts.coverPath && !(await uploadCover(page, opts.coverPath))) {
       warnings.push("封面文件未能上传。");
