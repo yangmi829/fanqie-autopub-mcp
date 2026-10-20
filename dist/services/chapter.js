@@ -3,6 +3,7 @@ import { automationReadiness } from "./auth.js";
 import { openSession, isError, apiGet, API, chapterUrlTemplate, modifyChapterPath, authorApiBase } from "../browser/endpoints.js";
 import { toPlainText, cleanChapterTitle } from "../core/text.js";
 import { logger } from "../core/logger.js";
+import { NEXT_STEP_CHAPTER_PUBLISHED } from "../core/reminders.js";
 export async function listChapters(bookId, pageCount = 200) {
     const readiness = automationReadiness();
     if (!readiness.ready)
@@ -649,7 +650,7 @@ export async function uploadChapter(opts) {
             ok: success,
             action: success ? (opts.scheduledTime ? "scheduled" : "published") : "error",
             message: success
-                ? `章节「${plainTitle}」已发布${opts.scheduledTime ? "（定时）" : "（立即）"}。已发布章节数 ${before.count} → ${after.count}。`
+                ? `章节「${plainTitle}」已发布${opts.scheduledTime ? "（定时）" : "（立即）"}。已发布章节数 ${before.count} → ${after.count}。${NEXT_STEP_CHAPTER_PUBLISHED}`
                 : `已走完发布流程，但后台未确认到该章节（已发布数 ${before.count} → ${after.count}）。请到作者后台确认；若仍在草稿箱可手动发布或重试。`,
             url: finalUrl !== url ? finalUrl : url,
             screenshotPath: file,

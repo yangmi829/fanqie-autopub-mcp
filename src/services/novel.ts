@@ -2,6 +2,7 @@ import { sleep, shot } from "../browser/driver.js";
 import { automationReadiness } from "./auth.js";
 import { openSession, isError, apiGet, API, authorApiBase, withParams, createBookUrl } from "../browser/endpoints.js";
 import { logger } from "../core/logger.js";
+import { NEXT_STEP_BOOK_CREATED } from "../core/reminders.js";
 
 /* ------------------------------ 内容标签上限 ------------------------------ */
 
@@ -545,7 +546,7 @@ export async function createBook(opts: CreateBookOptions): Promise<CreateBookRes
     return {
       ok: true,
       action: "created",
-      message: `建书成功，番茄书 ID = ${bookId}`,
+      message: `建书成功，番茄书 ID = ${bookId}。${NEXT_STEP_BOOK_CREATED}`,
       bookId,
       url: `${authorApiBase()}/main/writer/book-manage`,
       screenshotPath,

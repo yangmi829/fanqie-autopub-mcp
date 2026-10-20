@@ -2,6 +2,7 @@ import { sleep, shot } from "../browser/driver.js";
 import { automationReadiness } from "./auth.js";
 import { openSession, isError, apiGet, API, authorApiBase, withParams, createBookUrl } from "../browser/endpoints.js";
 import { logger } from "../core/logger.js";
+import { NEXT_STEP_BOOK_CREATED } from "../core/reminders.js";
 /* ------------------------------ 内容标签上限 ------------------------------ */
 /** 内容标签 4 组的字数上限，对应番茄 config serial_book_label_setting */
 export const CONTENT_TAG_CAPS = { plot: 4, emotion: 2, character: 4, worldview: 1 };
@@ -429,7 +430,7 @@ export async function createBook(opts) {
         return {
             ok: true,
             action: "created",
-            message: `建书成功，番茄书 ID = ${bookId}`,
+            message: `建书成功，番茄书 ID = ${bookId}。${NEXT_STEP_BOOK_CREATED}`,
             bookId,
             url: `${authorApiBase()}/main/writer/book-manage`,
             screenshotPath,

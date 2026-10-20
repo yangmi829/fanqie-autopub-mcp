@@ -4,6 +4,7 @@ import { automationReadiness } from "./auth.js";
 import { openSession, isError, apiGet, apiPostQuery, API, shortRecommendUrl } from "../browser/endpoints.js";
 import { toPlainText, stripHtml } from "../core/text.js";
 import { logger } from "../core/logger.js";
+import { NEXT_STEP_WTT_PUBLISHED } from "../core/reminders.js";
 /**
  * 微头条（番茄「短故事 - 作品推荐」）：
  * 官方教程《微头条功能使用教程》——平台针对短故事提供「微头条发布」，
@@ -599,7 +600,8 @@ export async function createMicroHeadline(opts) {
             action: "published",
             message: `已发布微头条${hit ? `（已复核，item_id=${hit.itemId}，status=${hit.status}）` : ""}：` +
                 `关联短篇《${card.title}》，正文 ${draft.chars} 字。` +
-                `⚠️ 推荐状态由内容质量决定（小流量推荐 → 热推中 / 审核不通过），每天最多发 ${WTT_DAILY_LIMIT} 条，超出不再分发。`,
+                `⚠️ 推荐状态由内容质量决定（小流量推荐 → 热推中 / 审核不通过），每天最多发 ${WTT_DAILY_LIMIT} 条，超出不再分发。` +
+                NEXT_STEP_WTT_PUBLISHED,
             wttItemId: hit?.itemId ?? wttItemId,
             card: { bookId: card.bookId, title: card.title },
             content: draft.content,

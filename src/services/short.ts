@@ -4,6 +4,7 @@ import { automationReadiness } from "./auth.js";
 import { openSession, isError, apiGet, API, authorApiBase, shortPublishUrl } from "../browser/endpoints.js";
 import { toPlainText, countCjk } from "../core/text.js";
 import { logger } from "../core/logger.js";
+import { NEXT_STEP_SHORT_PUBLISHED } from "../core/reminders.js";
 
 /** 短故事官方字数区间：6000–80000 字（最佳 1w–3w） */
 export const SHORT_MIN_WORDS = 6000;
@@ -1601,7 +1602,8 @@ export async function publishShortStory(opts: PublishShortStoryOptions): Promise
       action: verified ? "published" : "error",
       message: verified
         ? `已发布 item_id=${itemId}（后台 publish_status=1）。${draftNote}` +
-          `⚠️ 番茄审核工作时间 7:00-24:00：夜间提交会卡在「审核中」直至次日早上 7-9 点。`
+          `⚠️ 番茄审核工作时间 7:00-24:00：夜间提交会卡在「审核中」直至次日早上 7-9 点。` +
+          NEXT_STEP_SHORT_PUBLISHED
         : `发布流程已走完，但 edit/v1 的 publish_status 仍未变为 1，请到短故事列表/草稿箱核对。`,
       itemId,
       title: verified?.title,

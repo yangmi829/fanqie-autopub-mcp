@@ -25,6 +25,7 @@
 ## ⚠️ 硬约束（不了解必踩坑）
 1. **写接口只能驱动真实页面**：番茄 author 写接口带 `msToken`/`a_bogus` 签名，手工 fetch 必返回 `-2 参数有误`。只有**只读 GET**（list / edit / category 类）能走 `browser/endpoints.ts` 的 `apiGet()` 免签名。注意：删除短故事草稿同样是写接口 → 必须走草稿箱 UI（hover → `.serial-icon-general_delete` → 确认弹窗）；且 SVG 元素**没有 `.click()`**，得用 `page.mouse.click(x, y)`。
 2. **写操作两段式**：默认 `confirm=false`（只填表 / 截图，不提交），`confirm=true` 才提交。新增写工具必须沿用该约定，`publish_*` / `delete_*` 默认走预览。
+   - **AI 声明默认取肯定项（业务硬要求）**：章节发布 `useAI !== false` → 选「是 / AI生成」，短篇发布 `chooseUseAI(page, opts.useAI !== false)`；只有显式 `use_ai=false` 才选「否 / 本人原创」。别改回「必须显式传」。候选文案在 `services/chapter.ts` / `services/short.ts` 的 `AI_YES_LABELS` / `AI_NO_LABELS`。
 3. **stdout 属于 MCP 协议**：日志只能走 stderr（`core/logger.ts`）。任何 `console.log` 都会破坏 stdio 协议。
 4. **禁止 `process.cwd()`**：MCP 子进程的 cwd 不可靠；路径统一走 `core/paths.ts`（基于 `import.meta.url` 解析）。
 5. **ESM + NodeNext：相对 import 必须带 `.js` 后缀**（如 `from "../core/logger.js"`），即使源文件是 `.ts`。
@@ -39,6 +40,7 @@
 14. **npm 发布（2026-10-18）**：① `package.json` 的 `files` 是**白名单**（`dist` / `README.md` / `LICENSE`）——`data/*` **绝不能**进 tarball。`.gitignore` 只保护 git：npm 仅在既无 `files` 又无 `.npmignore` 时才回退读 `.gitignore`，所以一旦白名单被删或加了 `.npmignore`，**有效 cookies 会被发到公共 registry，不可逆**。改发布配置后必跑 `npm pack --dry-run --json` 核对文件清单。② `prepack` 钩子会 `npm run build`（发出去的产物一定有构建），但**仓库里的 `dist/` 仍必须同步提交**（clone 用法靠它，见「提交前必须知道」）。③ `core/paths.ts` 的数据目录是**三级解析**：`FANQIE_DATA_DIR` → `<项目根>/data`（目录存在即用，保住仓库内 / clone 的历史行为）→ `~/.fanqie-autopub`（npm / npx 安装：发布包不含 `data/`，且包目录在 npm 缓存里会被清）。`DATA_DIR_SOURCE` 会进启动日志与 `get_publish_status` / `--selfcheck` 的 `details`，排障先看它。**别把默认值改回「包目录」**，那等于让 npx 用户的登录态和文稿库随时蒸发。④ **版本号不许写死**：`src/index.ts` 的 `SERVER_VERSION` 必须取 `core/paths.ts` 的 `PACKAGE_VERSION`（读 `package.json`）。曾经写死 `"1.0.0"`，`npm version` 升到 1.1.0 后 `/health`、MCP `serverInfo`、stdio 启动日志一起报旧版本；`scripts/smoke.mjs` 现在有 2 条断言（stdio `getServerVersion()` 与远程 `/health` 的 `version` 都须等于 `package.json` 的 `version`）盯着这件事。
 15. **页面级文本判断会被「编辑器正文」污染**（2026-10-19 血泪）：`document.body.innerText` **包含正在编辑的稿件正文**。短故事实名守卫原来用 `/实名|人脸|认证|身份验证/` 扫整页，被《402的草莓》正文「…一是**记人脸**…」命中 → 工具在**正常的「提交确认」弹窗**处判成"要求实名"并中止发布；同账号另一篇正文没这些词所以能发，于是被误判成"偶发/回归"。写守卫/校验一律**只看可见模态 + 精确指令句**（见 `services/short.ts` 的 `authWallText()`），兜底也按容器（`.syl-editor-container`）剔除正文；返回里带上命中文案，别只回「疑似实名」。
 16. **真实鼠标点击必须先 `scrollIntoView` 再取 `boundingBox`**：`boundingBox()` 给的是文档坐标，编辑页极长（实测「是否使用AI」在 y≈39205，视口仅 900）→ 直接 `page.mouse.click(box.x, box.y)` 点的是**视口外的空气**，字段看起来"没反应"其实根本没点上。仓库里统一用 `realClick()` / `realClickText()`（`services/short.ts`）。`page.click(sel)` 自带滚动所以没事——**手写的 `boundingBox` + `mouse.click` 最容易漏这一步**。
+17. **发布类工具成功返回必须带「人工下一步」**：建书 / 发章 / 发短篇 / 发微头条 / 批量发布成功后，把 `core/reminders.ts` 的 `NEXT_STEP_*` 拼进 `message`——提醒用户去作者后台「作品信息 → 签约」申请签约、到「章节管理 / 短故事」看审核。签约与审核只能在后台由本人操作（合同 / 实名），MCP 不做也不代做。**只在真的提交且成功的分支拼**（单次发布是 `confirm=true`，批量是 `opts.confirm` 为真），预览 / 失败不要带。
 
 ## 短故事发布页（2026-10-19 真机实测）
 - **分类浮层的 `Escape` 关不掉**：`.publish-short-category-select-pop` 按 Escape 仍在（实测高 214），它盖在表单上会**吃掉后续所有真实鼠标点击** → 点「发布协议」实际点到浮层里的分类项 → 报「发布必填项未补齐：发布协议未勾选」。只能**点浮层外空白**关（`closeCategoryPop()`，并校验真的关了）；`acceptPublishTerms` 每次重试前都先调它，并校验「短故事发布事项」弹窗真的打开了。
