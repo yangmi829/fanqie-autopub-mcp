@@ -25,7 +25,7 @@
 ## ⚠️ 硬约束（不了解必踩坑）
 1. **写接口只能驱动真实页面**：番茄 author 写接口带 `msToken`/`a_bogus` 签名，手工 fetch 必返回 `-2 参数有误`。只有**只读 GET**（list / edit / category 类）能走 `browser/endpoints.ts` 的 `apiGet()` 免签名。注意：删除短故事草稿同样是写接口 → 必须走草稿箱 UI（hover → `.serial-icon-general_delete` → 确认弹窗）；且 SVG 元素**没有 `.click()`**，得用 `page.mouse.click(x, y)`。
 2. **写操作两段式**：默认 `confirm=false`（只填表 / 截图，不提交），`confirm=true` 才提交。新增写工具必须沿用该约定，`publish_*` / `delete_*` 默认走预览。
-   - **AI 声明默认取肯定项（业务硬要求）**：章节发布 `useAI !== false` → 选「是 / AI生成」，短篇发布 `chooseUseAI(page, opts.useAI !== false)`；只有显式 `use_ai=false` 才选「否 / 本人原创」。别改回「必须显式传」。候选文案在 `services/chapter.ts` / `services/short.ts` 的 `AI_YES_LABELS` / `AI_NO_LABELS`。
+   - **AI 声明默认选否定项（当前业务约定）**：章节发布 `useAI === true` 才选「是 / AI生成」，短篇发布 `chooseUseAI(page, opts.useAI === true)`；默认 / 不传都选「否 / 本人原创」，要 AI 声明必须显式传 `use_ai=true`。候选文案在 `services/chapter.ts` / `services/short.ts` 的 `AI_YES_LABELS` / `AI_NO_LABELS`。
 3. **stdout 属于 MCP 协议**：日志只能走 stderr（`core/logger.ts`）。任何 `console.log` 都会破坏 stdio 协议。
 4. **禁止 `process.cwd()`**：MCP 子进程的 cwd 不可靠；路径统一走 `core/paths.ts`（基于 `import.meta.url` 解析）。
 5. **ESM + NodeNext：相对 import 必须带 `.js` 后缀**（如 `from "../core/logger.js"`），即使源文件是 `.ts`。

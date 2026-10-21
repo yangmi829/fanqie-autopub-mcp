@@ -118,7 +118,7 @@ export function registerShortStoryTools(server: McpServer): void {
         categories: categoryShape,
         main_category: mainCategoryShape,
         cover_path: z.string().optional().describe("本地封面图片路径（可选）"),
-        use_ai: z.boolean().optional().describe("是否使用AI（默认 true＝选「是」；本工具存草稿时一并选好）"),
+        use_ai: z.boolean().optional().describe("是否使用AI（不给＝不改；显式 true 选「是」、false 选「否」）"),
         divided_chapters: z.boolean().optional().describe("是否使用「分章」（对应 story_origin_divided_chapters）"),
         confirm: z.boolean().optional().describe("是否真正保存草稿，默认 false"),
         headless: z.boolean().optional().describe("是否无头运行，默认 true"),
@@ -218,7 +218,7 @@ export function registerShortStoryTools(server: McpServer): void {
         `发布短故事。可给 item_id 直接发布已有作品，或给 title(+content) 新建并发布。` +
         `confirm=false 只填表预览；confirm=true 才走 补齐必填项 → 存草稿 → 下一步 →（发布提示）→ 提交确认 → 发布。` +
         `⚠️ 平台强制三个必填项（缺一个「下一步」只会弹 3 秒即消失的 toast）：` +
-        `① 封面（传 cover_path，或该草稿/作品已有封面）；② 是否使用AI（**默认选「是」/「AI生成」**，显式传 use_ai=false 才选「否」）；` +
+        `① 封面（传 cover_path，或该草稿/作品已有封面）；② 是否使用AI（**默认选「否」/「本人原创」**，显式传 use_ai=true 才选「是」/「AI生成」）；` +
         `③ 发布协议（自动勾）+ 试读比例（自动点「去设置」落一条 30% 试读线）。` +
         `④ 分类：平台是「主分类 + 附加分类」，**主分类必选**——传 categories 时请把主分类组的名字一起给（或用 main_category），` +
         `否则本工具会在点「下一步」前直接返回错误并列出主分类可选值（不会干等弹窗超时）。` +
@@ -240,7 +240,7 @@ export function registerShortStoryTools(server: McpServer): void {
         use_ai: z
           .boolean()
           .optional()
-          .describe("是否使用AI：**默认 true＝选「是」**（AI 相关声明一律取肯定项）；显式 false 才选「否」"),
+          .describe("是否使用AI：**默认 false＝选「否」/「本人原创」**；显式 true 才选「是」/「AI生成」"),
         confirm: z.boolean().optional().describe("是否真正发布，默认 false"),
         headless: z.boolean().optional().describe("是否无头运行，默认 true"),
       },

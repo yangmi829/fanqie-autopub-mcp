@@ -25,7 +25,7 @@ const SERVER_VERSION = PACKAGE_VERSION;
 const INSTRUCTIONS = [
   "番茄小说（fanqienovel.com）作者后台自动发布服务。只操作番茄，不要与本机七猫（qimao）服务的工具混用。",
   "1) 写操作默认 confirm=false：只做预览（填表或读现状 + 截图），不提交。预览后把待提交内容 / 截图 / 返回的 content 交给用户确认；用户同意后再用同样的参数加 confirm=true 重调。涉及自动保存的编辑器在预览时不会填入正文。",
-  "2) 内容声明（是否使用AI）默认取肯定项；只有用户明确要求「本人原创 / 否」才传 use_ai=false。",
+  "2) 内容声明（是否使用AI）默认选「否」/本人原创；只有用户明确要求「使用AI / 含AI生成内容」才传 use_ai=true。",
   "3) 正文优先用本地文稿库 article_id（先用 save_article 入库），其次 file_path，最后 content，避免长文本反复传输。",
   "4) 发布 / 修改前按需读资源 fanqie://publish-rules；赛道与前三章方法见 fanqie://genres、fanqie://golden-three-chapters。",
   "5) 发布成功后按返回的「下一步」提醒用户去作者后台完成签约 / 查看审核——签约与审核只能用户本人操作。",

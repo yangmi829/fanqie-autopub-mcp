@@ -60,7 +60,7 @@ export interface UploadChapterOptions {
   chapterNumber?: number | string;
   scheduledTime?: string;
   detection?: "basic" | "full";
-  /** 发布设置「是否使用AI」；**默认 true（选「是」）**，显式传 false 才选「否」 */
+  /** 发布设置「是否使用AI」；**默认 false（选「否」/本人原创）**，显式传 true 才选「是」 */
   useAI?: boolean;
   confirm?: boolean;
   headless?: boolean;
@@ -306,7 +306,7 @@ async function chooseDetection(page: any, mode: "basic" | "full", timeoutMs = 20
 /**
  * 「是否使用AI」的选项文案。
  * 番茄现版是「是 / 否」；平台若改成「AI生成 / 非AI生成」，这里兜住。
- * ⚠️ 业务要求：AI 相关声明一律选**肯定项**（是 / AI生成），默认 useAI=true。
+ * ⚠️ 默认选**否定项**（否 / 本人原创）；只有显式 useAI=true 才选肯定项（是 / AI生成）。
  */
 const AI_YES_LABELS = ["是", "AI生成", "AI 生成", "含AI生成内容", "AI创作", "AI辅助创作", "人工智能生成"];
 const AI_NO_LABELS = ["否", "非AI生成", "不是AI生成", "本人原创", "人工创作"];
@@ -719,8 +719,8 @@ export async function uploadChapter(opts: UploadChapterOptions): Promise<UploadC
     const detection: "basic" | "full" = opts.detection === "full" ? "full" : "basic";
 
     // Step3-5 轮流处理：内容检测方式 → 发布设置 → 错别字确认（后两者可能被跳过）
-    // 「是否使用AI」默认选「是」（AI 相关声明一律选肯定项），显式 useAI=false 才选「否」
-    const submitted = await drivePublishDialogs(page, detection, opts.useAI !== false);
+    // 「是否使用AI」默认选「否」（本人原创），显式 useAI=true 才选「是」
+    const submitted = await drivePublishDialogs(page, detection, opts.useAI === true);
     if (!submitted) {
       await shot(page, "chapter-submit-missing").catch(() => "");
       logger.warn("未检测到「提交」确认弹窗，仍尝试复核发布结果");
