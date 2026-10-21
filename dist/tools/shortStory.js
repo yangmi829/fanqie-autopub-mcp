@@ -3,7 +3,7 @@ import { fromService, fail } from "../core/result.js";
 import { listShortStories, getShortStory, createShortStory, updateShortStory, publishShortStory, deleteShortStory, setShortStoryCover, validateShortContent, SHORT_MIN_WORDS, SHORT_MAX_WORDS, } from "../services/short.js";
 import { articles, nowIso } from "../core/store.js";
 import { logger } from "../core/logger.js";
-import { resolveContent, syncArticleAfterPublish } from "../services/library.js";
+import { resolveContent, syncArticleAfterPublish, missingArticleMessage } from "../services/library.js";
 import { buildMicroHeadlineDraft, WTT_DAILY_LIMIT } from "../services/microHeadline.js";
 const categoryShape = z.array(z.string()).optional().describe("作品分类名称（如 婚姻家庭/现言甜宠），主分类必选，最多 8 个");
 const mainCategoryShape = z
@@ -16,7 +16,7 @@ async function pickContent(args) {
     if (args.article_id) {
         const art = await articles.get(args.article_id);
         if (!art)
-            throw new Error(`本地文稿库未找到 article_id=${args.article_id}`);
+            throw new Error(missingArticleMessage(args.article_id));
         return art.content;
     }
     if (args.content)
