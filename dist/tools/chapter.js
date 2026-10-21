@@ -136,7 +136,7 @@ export function registerChapterTools(server) {
             article_ids: z.array(z.string()).optional().describe("指定要上传的 article_id 列表（缺省＝该小说下所有待发布章节）"),
             limit: z.number().int().positive().optional().describe("最多上传多少章"),
             interval_seconds: z.number().min(0).optional().describe("每章之间间隔秒数，默认 5"),
-            detection: z.enum(["basic", "full"]).optional(),
+            detection: z.enum(["basic", "full"]).optional().describe("内容检测方式：basic=仅基础检测，full=全面检测（默认 basic）"),
             use_ai: z.boolean().optional().describe("发布设置「是否使用AI」：默认 true＝选「是」（AI 相关声明一律取肯定项）"),
             confirm: z.boolean().optional().describe("是否真正发布，默认 false"),
             headless: z.boolean().optional().describe("是否无头运行，默认 false"),

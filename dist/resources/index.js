@@ -31,7 +31,7 @@ export function registerResources(server) {
         });
     });
     server.registerResource("tasks", "fanqie://tasks", { title: "发布任务日志", description: "批量/单章上传的任务日志", mimeType: MIME }, async (uri) => json(uri, { total: (await tasks.all()).length, tasks: await tasks.all() }));
-    server.registerResource("publish-rules", "fanqie://publish-rules", { title: "发布限制须知", description: "短故事字数区间、标签上限、定时发布支持范围等", mimeType: MIME }, async (uri) => json(uri, {
+    server.registerResource("publish-rules", "fanqie://publish-rules", { title: "发布限制须知", description: "短故事字数区间、标签上限、定时发布支持范围等；写操作前先读", mimeType: MIME }, async (uri) => json(uri, {
         shortStory: {
             words: `${SHORT_MIN_WORDS}–${SHORT_MAX_WORDS}`,
             best: "1w–3w 字",
@@ -62,6 +62,6 @@ export function registerResources(server) {
             shortManage: shortManageUrl(),
         },
     }));
-    server.registerResource("genres", "fanqie://genres", { title: "番茄赛道知识库", description: "主流赛道的爽点机制、开篇要求、节奏、避坑清单与建议单章字数（不联网）", mimeType: MIME }, async (uri) => json(uri, GENRES));
-    server.registerResource("golden-three-chapters", "fanqie://golden-three-chapters", { title: "黄金三章方法论", description: "前三章逐章目标与通用节奏要求（markdown）", mimeType: "text/markdown" }, async (uri) => ({ contents: [{ uri: uri.href, mimeType: "text/markdown", text: renderGoldenThree() }] }));
+    server.registerResource("genres", "fanqie://genres", { title: "番茄赛道知识库", description: "主流赛道的爽点机制、开篇要求、节奏、避坑清单与建议单章字数（不联网）；定赛道 / 写开篇前先读", mimeType: MIME }, async (uri) => json(uri, GENRES));
+    server.registerResource("golden-three-chapters", "fanqie://golden-three-chapters", { title: "黄金三章方法论", description: "前三章逐章目标与通用节奏要求（markdown）；写前三章前先读", mimeType: "text/markdown" }, async (uri) => ({ contents: [{ uri: uri.href, mimeType: "text/markdown", text: renderGoldenThree() }] }));
 }
