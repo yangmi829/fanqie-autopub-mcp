@@ -1082,6 +1082,22 @@ async function readToasts(page: any): Promise<string[]> {
 }
 
 /**
+ * 读「发布提示」弹窗原文（章节格式 / 错别字自检的具体条目）。
+ * ⚠️ 必须在点「继续发布」**之前**读——点完弹窗就关了，只能记概括文案（2026-10-20 复盘教训）。
+ */
+async function readContinuePublishTip(page: any): Promise<string> {
+  return page
+    .evaluate(() => {
+      const modals = (Array.from(document.querySelectorAll(".arco-modal, .arco-drawer, [role=dialog]")) as any[])
+        .filter((m: any) => m.getBoundingClientRect().height > 40)
+        .map((m: any) => (m.innerText || "").replace(/\s+/g, " ").trim())
+        .filter((t: string) => t.includes("继续发布"));
+      return modals.length ? modals[0].slice(0, 200) : "";
+    })
+    .catch(() => "");
+}
+
+/**
  * 勾「发布协议」——「下一步」的硬门之一（`if (!S) { 高亮 signLicense; return }`）。
  *
  * 实测（2026-10）：这个复选框是自绘组件，JS click（input / label / mask）**点不上**；
@@ -1552,8 +1568,14 @@ export async function publishShortStory(opts: PublishShortStoryOptions): Promise
     }
 
     // 「下一步」后平台可能弹「发布提示」（章节格式 / 错别字等自检）→ 点「继续发布」才进「提交确认」
+    // ⚠️ 先读弹窗原文再点：点完弹窗即关闭，历史日志只剩概括文案，无法判断到底提示了什么。
+    const tipText = await waitFor(() => readContinuePublishTip(page), 5000, 1000);
     if (await waitFor(async () => (await jsClickButton(page, "继续发布")) || (await clickButtonByText(page, "继续发布")), 10000, 1000)) {
-      warnings.push("平台弹出「发布提示」（章节格式/错别字自检），已点「继续发布」继续。");
+      warnings.push(
+        tipText
+          ? `平台弹出「发布提示」：${tipText}（已点「继续发布」继续）。`
+          : "平台弹出「发布提示」（章节格式/错别字自检，未取到弹窗原文），已点「继续发布」继续。"
+      );
       await sleep(6000);
     }
 
