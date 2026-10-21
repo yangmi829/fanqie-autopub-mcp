@@ -536,10 +536,13 @@ async function selectCategories(page, names) {
         else
             missing.push(name);
     }
+    // ⚠️ 同一个分类名会在「组内定位」和「回读」两处各记一次未找到 → 去重后再回报，
+    //    否则 warning 会出现「未找到分类：悬疑、悬疑」（2026-10-20 实测）。
+    const missingNames = [...new Set(missing)];
     if (applied.length)
         logger.info(`[selectCategories] 已选分类：${applied.join("、")}`);
-    if (missing.length)
-        logger.warn(`[selectCategories] 未选中：${missing.join("、")}（已选列表=${selectedText}）`);
+    if (missingNames.length)
+        logger.warn(`[selectCategories] 未选中：${missingNames.join("、")}（已选列表=${selectedText}）`);
     // 5.5) 主分类是发布硬门：传入的名字里必须有落在「主分类」组的。
     //      旧实现只看「已选列表里有没有这些名字」，于是「推理」「职场」（附加分类）也能通过，
     //      发布时平台连弹三次「请选择作品主分类」→ 工具干等「提交确认」弹窗超时（2026-10 事故）。
@@ -552,7 +555,7 @@ async function selectCategories(page, names) {
     const pruned = await pruneCategories(page, names);
     if (pruned.length)
         logger.info(`[selectCategories] 已移除多余分类：${pruned.join("、")}`);
-    return { applied, missing, mainApplied, mainOptions };
+    return { applied, missing: missingNames, mainApplied, mainOptions };
 }
 /**
  * 关闭「作品分类」浮层。
