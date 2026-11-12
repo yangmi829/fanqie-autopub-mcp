@@ -130,6 +130,39 @@ async function jsClick(page: any, sel: string): Promise<void> {
   await page.evaluate((s: string) => (document.querySelector(s) as any)?.click(), sel).catch(() => {});
 }
 
+/**
+ * 关闭建书页等可能弹出的引导弹窗（如「签约模式说明」）。
+ * 该弹窗在 /main/writer/create 加载时覆盖整张表单，若不关闭会导致：
+ * 表单被遮罩填不进、或「立即创建」被弹窗拦截，最终拿不到 book_id。
+ * 只点「知道了」这类确认按钮，且限定在可见的弹窗容器内，避免误点正文里的同名元素。
+ */
+async function dismissGuideModals(page: any): Promise<string[]> {
+  const dismissed: string[] = [];
+  for (let i = 0; i < 3; i++) {
+    const clicked = await page
+      .evaluate(() => {
+        const vis = (e: any) => !!(e.offsetWidth || e.offsetHeight || (e.getClientRects && e.getClientRects().length));
+        const modals = Array.from(
+          document.querySelectorAll(".arco-modal-mask, .arco-modal, [class*='-modal'], [class*='Modal']")
+        ).filter(vis) as any[];
+        for (const m of modals) {
+          const btns = Array.from(m.querySelectorAll("button, span, div")) as any[];
+          const know = btns.find((b) => (b.textContent || "").trim() === "知道了");
+          if (know) {
+            (know.closest("button") || know).click();
+            return (m.textContent || "").replace(/\s+/g, " ").slice(0, 40);
+          }
+        }
+        return null;
+      })
+      .catch(() => null);
+    if (!clicked) break;
+    dismissed.push(clicked as string);
+    await sleep(700);
+  }
+  return dismissed;
+}
+
 /** 读取标签行上「已选中」的标签（读表单行展示区，不是弹窗） */
 async function readRowTags(page: any, viewSel: string): Promise<string[]> {
   return page.evaluate((sel: string) => {
@@ -453,6 +486,17 @@ export async function createBook(opts: CreateBookOptions): Promise<CreateBookRes
         url: createBookUrl(),
       };
     }
+
+    // 关闭可能弹出的引导弹窗（如「签约模式说明」），否则表单被遮罩、填不进
+    const dismissed = await dismissGuideModals(page);
+    if (dismissed.length) logger.info(`[createBook] 已关闭引导弹窗：${dismissed.join("；")}`);
+    // 等表单输入框就绪（部分引导弹窗关闭后表单才渲染）
+    await page
+      .waitForFunction(
+        () => !!document.querySelector('input[placeholder="请输入作品名称"]'),
+        { timeout: 15000 }
+      )
+      .catch(() => {});
 
     // 填表
     await page.evaluate(
